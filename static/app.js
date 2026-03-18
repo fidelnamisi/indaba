@@ -40,6 +40,8 @@ const state = {
   selectedContactId: null,
   selectedLeadId:    null,
   promoOverdueCount: 0,
+  promoDispatchedCount: 0,
+  promoInstruction: null,
   currentMessageFilter: "all"
 };
 
@@ -2447,6 +2449,15 @@ function openHelpModal() {
       <div class="help-heading">Sequence (P1–P4)</div>
       <p>Within a zone, P1–P4 sets the order projects appear (P1 first). This is a <em>sequence</em> signal, not an absolute priority — that role belongs to the ⊙ Focus slot.</p>
     </div>
+    <div class="help-section">
+      <div class="help-heading">Promotion Machine: Cowork Handoff</div>
+      <p>Indaba uses a file-based handoff for sending WhatsApp messages via Cowork:</p>
+      <ul class="help-list">
+        <li><strong>Dispatch:</strong> Click "Dispatch to Cowork" to write job files to the data folder.</li>
+        <li><strong>Trigger Cowork:</strong> Open Cowork and run the command: <code>Send WhatsApps from Indaba</code>.</li>
+        <li><strong>Reconcile:</strong> Once Cowork is done, click "Reconcile Results" in Indaba to update message statuses and lead communication logs.</li>
+      </ul>
+    </div>
     <div class="modal-actions">
       <button class="btn-secondary" onclick="openConstantsModal()">Edit Constants →</button>
       <button class="btn-primary"   onclick="closeModal()">Got it</button>
@@ -2603,6 +2614,7 @@ async function loadPromoMessages() {
     const data = await GET('/api/promo/messages');
     state.promoMessages = data.messages || [];
     state.promoOverdueCount = state.promoMessages.filter(m => m.status === 'overdue').length;
+    state.promoDispatchedCount = state.promoMessages.filter(m => m.status === 'dispatched').length;
     renderPromoSender();
   } catch (e) { toast("Could not load messages", "error"); }
 }
@@ -3762,27 +3774,48 @@ function renderPromoSender() {
 
   const msgs = state.promoMessages;
   const filter = state.currentMessageFilter || 'all';
-
   const filtered = filter === 'all' ? msgs : msgs.filter(m => m.status === filter);
 
   container.innerHTML = `
     <div class="hub-panel" style="max-width:1100px;">
       <h2>Message Queue & Sender</h2>
       
+      ${state.promoInstruction ? `
+        <div class="promo-instruction-banner">
+          <button class="promo-banner-close" onclick="state.promoInstruction = null; renderPromoSender()">&times;</button>
+          <h4>Action Required</h4>
+          <p>${state.promoInstruction}</p>
+          <div style="margin-top:12px; display:flex; gap:8px;">
+            <code>Send WhatsApps from Indaba</code>
+            <button class="btn-secondary" style="font-size:11px;" onclick="reconcileResults()">Reconcile Now</button>
+          </div>
+        </div>
+      ` : ''}
+
+      ${state.promoDispatchedCount > 0 && !state.promoInstruction ? `
+        <div class="promo-dispatch-banner">
+          <div style="color:#03a9f4; font-weight:bold;">${state.promoDispatchedCount} message(s) are with Cowork.</div>
+          <button class="btn-secondary" style="font-size:11px;" onclick="reconcileResults()">Reconcile Results</button>
+        </div>
+      ` : ''}
+
       ${state.promoOverdueCount > 0 ? `
         <div class="promo-overdue-banner">
           <div class="promo-overdue-text">${state.promoOverdueCount} message(s) are overdue.</div>
-          <button class="btn-primary" style="background:#e09a30;border-color:#e09a30;" onclick="processMessageQueue()">Process Overdue Now</button>
+          <button class="btn-primary" style="background:#e09a30;border-color:#e09a30;" onclick="dispatchPromoQueue()">Dispatch Overdue Now</button>
         </div>
       ` : ''}
 
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
         <div class="btn-group" style="display:flex;gap:4px;">
-          ${['all','queued','sent','failed','overdue'].map(f => `
+          ${['all','queued','dispatched','sent','failed','overdue'].map(f => `
             <button class="btn-secondary ${filter === f ? 'active' : ''}" style="font-size:10px;padding:4px 10px;" onclick="state.currentMessageFilter='${f}'; renderPromoSender()">${f.toUpperCase()}</button>
           `).join('')}
         </div>
-        <button class="btn-primary" onclick="processMessageQueue()">Process Queue Now</button>
+        <div style="display:flex; gap:8px;">
+          <button class="btn-secondary" onclick="reconcileResults()">Reconcile Results</button>
+          <button class="btn-primary" onclick="dispatchPromoQueue()">Dispatch to Cowork</button>
+        </div>
       </div>
 
       <table class="promo-table">
@@ -3805,14 +3838,15 @@ function renderPromoSender() {
               <td><span style="font-size:11px;">${m.scheduled_at ? formatDateShort(m.scheduled_at) : 'Immediately'}</span></td>
               <td>${esc(m.source)}</td>
               <td>
+                ${m.status === 'dispatched' ? '<span style="color:var(--muted);font-size:11px;">Awaiting Cowork</span>' : ''}
                 ${(m.status === 'queued' || m.status === 'overdue') ? `
-                  <button class="btn-secondary" style="padding:4px 8px;font-size:11px;" onclick="sendMessageNow('${m.id}')">Send Now</button>
+                  <button class="btn-secondary" style="padding:4px 8px;font-size:11px;" onclick="dispatchMessageNow('${m.id}')">Dispatch Now</button>
                   <button class="btn-secondary" style="padding:4px 8px;font-size:11px;" onclick="rescheduleMessagePrompt('${m.id}')">Schedule</button>
                 ` : ''}
                 ${m.status === 'failed' ? `
                    <button class="btn-secondary" style="padding:4px 8px;font-size:11px;" onclick="rescheduleMessage('${m.id}', null)">Retry</button>
                 ` : ''}
-                ${m.status !== 'sent' ? `
+                ${m.status !== 'sent' && m.status !== 'dispatched' ? `
                   <button class="btn-secondary" style="padding:4px 8px;font-size:11px;color:var(--p1);" onclick="deleteMessage('${m.id}')">Delete</button>
                 ` : ''}
               </td>
@@ -3823,20 +3857,44 @@ function renderPromoSender() {
     </div>`;
 }
 
-async function processMessageQueue() {
+async function dispatchPromoQueue() {
   try {
     const res = await POST('/api/promo/sender/process_queue');
-    toast(`Processed ${res.processed} messages. ${res.failed} failed.`, 'success');
-    loadPromoMessages();
-  } catch (e) { toast('Process failed', 'error'); }
+    if (res.failed > 0) {
+      toast(`Warning: ${res.failed} job file(s) failed to write.`, 'error');
+    }
+    if (res.dispatched > 0) {
+      state.promoInstruction = `✓ ${res.dispatched} message(s) dispatched. <br/>Now trigger Cowork with the command:`;
+      loadPromoMessages();
+    } else {
+      toast('No messages qualified for dispatch.', 'info');
+    }
+  } catch (e) { toast('Dispatch failed', 'error'); }
 }
 
-async function sendMessageNow(id) {
+async function dispatchMessageNow(id) {
   try {
-    await POST(`/api/promo/sender/send_now`, { message_id: id });
-    toast('Sent', 'success');
-    loadPromoMessages();
-  } catch (e) { toast('Send failed', 'error'); }
+    const res = await POST(`/api/promo/sender/send_now`, { message_id: id });
+    if (res.ok) {
+      toast("Job dispatched. Trigger Cowork: 'Send WhatsApps from Indaba'", "success");
+      loadPromoMessages();
+    } else {
+      toast(`Dispatch failed: ${res.error}`, "error");
+    }
+  } catch (e) { toast('Dispatch failed', 'error'); }
+}
+
+async function reconcileResults() {
+  try {
+    const res = await POST('/api/promo/sender/reconcile');
+    if (res.reconciled > 0) {
+      toast(`Reconciled ${res.reconciled} results. Sent: ${res.sent}. Failed: ${res.failed}.`, 'success');
+      state.promoInstruction = null; // Clear instruction if results found
+      loadPromoMessages();
+    } else {
+      toast("No result files found. Has Cowork finished sending?", "info");
+    }
+  } catch (e) { toast('Reconcile failed', 'error'); }
 }
 
 function rescheduleMessagePrompt(id) {

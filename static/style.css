@@ -1737,3 +1737,61 @@ body.light-mode .badge-focus-set:hover {
   margin-bottom: 20px;
   color: var(--muted);
 }
+
+/* ── Promotion Machine Cowork Banners & Statuses ── */
+.promo-message-status-dispatched { color: #e09a30; }
+
+.promo-dispatch-banner {
+  background: rgba(3, 169, 244, 0.1);
+  border-left: 4px solid #03a9f4;
+  padding: 16px;
+  margin-bottom: 24px;
+  border-radius: 0 4px 4px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.promo-instruction-banner {
+  background: rgba(76, 175, 80, 0.1);
+  border-left: 4px solid #4caf50;
+  padding: 20px;
+  margin-bottom: 24px;
+  border-radius: 0 4px 4px 0;
+  position: relative;
+}
+
+.promo-instruction-banner h4 {
+  margin-top: 0;
+  margin-bottom: 12px;
+  color: #4caf50;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.promo-instruction-banner p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.promo-instruction-banner code {
+  font-family: var(--font-mono);
+  background: rgba(0,0,0,0.2);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.promo-banner-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 18px;
+  cursor: pointer;
+}

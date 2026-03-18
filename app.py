@@ -1902,41 +1902,29 @@ def queue_wa_post(proverb_id):
     
     return jsonify(new_message)
 
-    return jsonify(new_message)
-
 # ── PROMOTION MACHINE: MESSAGE QUEUE & SENDER ──
 
-def trigger_cowork_send(message):
-    """Handoff message to Claude Cowork via file system."""
-    job_id = message['id']
-    job_file = os.path.join(DATA_DIR, 'cowork_jobs', f"{job_id}.json")
-    result_file = os.path.join(DATA_DIR, 'cowork_results', f"{job_id}.json")
-    
-    job_data = {
-        "message_id": job_id,
-        "recipient_phone": message['recipient_phone'],
-        "recipient_name": message['recipient_name'],
-        "content": message['content'],
-        "created_at": datetime.utcnow().isoformat() + "Z"
-    }
-    
-    # Write job file
-    with open(job_file, 'w', encoding='utf-8') as f:
-        json.dump(job_data, f, indent=2)
+def write_cowork_job(message):
+    """Writes /data/cowork_jobs/{message_id}.json for Cowork."""
+    try:
+        job_dir = os.path.join(DATA_DIR, 'cowork_jobs')
+        os.makedirs(job_dir, exist_ok=True)
+        job_file = os.path.join(job_dir, f"{message['id']}.json")
         
-    # Poll for result (max 60 seconds)
-    start_time = time.time()
-    while time.time() - start_time < 60:
-        if os.path.exists(result_file):
-            try:
-                with open(result_file, 'r', encoding='utf-8') as f:
-                    result = json.load(f)
-                return result
-            except:
-                pass
-        time.sleep(2)
+        job_data = {
+            "message_id": message["id"],
+            "recipient_phone": message["recipient_phone"],
+            "recipient_name": message["recipient_name"],
+            "content": message["content"],
+            "created_at": datetime.utcnow().isoformat() + "Z"
+        }
         
-    return {"status": "failed", "error": "Cowork timeout"}
+        with open(job_file, 'w', encoding='utf-8') as f:
+            json.dump(job_data, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"Error writing cowork job: {e}")
+        return False
 
 @app.route('/api/promo/messages', methods=['GET'])
 def list_promo_messages():
@@ -1995,94 +1983,135 @@ def reschedule_promo_message(msg_id):
     return jsonify(msg)
 
 @app.route('/api/promo/sender/process_queue', methods=['POST'])
-def process_message_queue():
-    msgs_data = read_json(PROMO_MESSAGES_FILE) or {"messages": []}
-    msgs = msgs_data.get("messages", [])
-    
-    now_str = datetime.utcnow().isoformat() + "Z"
-    now_dt = datetime.fromisoformat(now_str.replace("Z", "+00:00"))
-    
-    to_process = []
-    for m in msgs:
-        if m.get('status') == 'queued':
-            if not m.get('scheduled_at'):
-                to_process.append(m)
-            else:
-                try:
-                    sched = datetime.fromisoformat(m['scheduled_at'].replace("Z", "+00:00"))
-                    if sched <= now_dt:
-                        to_process.append(m)
-                except:
-                    pass
-        elif m.get('status') == 'overdue': # Also process overdue if requested? 
-            # Implementation brief says user confirms overdue. 
-            # This route handles the confirmed processing.
-            to_process.append(m)
-            
-    processed = 0
+def process_promo_queue():
+    data = read_json(PROMO_MESSAGES_FILE) or {"messages": []}
+    now = datetime.utcnow().isoformat() + "Z"
+    dispatched = 0
     failed = 0
-    details = []
     
-    for m in to_process:
-        result = trigger_cowork_send(m)
-        if result.get('status') == 'sent':
-            m['status'] = 'sent'
-            m['sent_at'] = result.get('sent_at') or (datetime.utcnow().isoformat() + "Z")
-            processed += 1
-            # If lead_id exists, log to communication log
-            if m.get('source_ref') and 'lead_id' in m['source_ref']:
-                log_lead_communication_internal(m['source_ref']['lead_id'], m['content'], "outbound")
-        else:
-            m['status'] = 'failed'
-            m['error'] = result.get('error', 'Unknown error')
-            failed += 1
-            
-        details.append({"id": m['id'], "status": m['status']})
-        
-    write_json(PROMO_MESSAGES_FILE, msgs_data)
-    return jsonify({"processed": processed, "failed": failed, "details": details})
+    for m in data["messages"]:
+        if m.get("status") == "queued":
+            # Check schedule if present
+            sched = m.get("scheduled_at")
+            if not sched or sched <= now:
+                if write_cowork_job(m):
+                    m["status"] = "dispatched"
+                    m["updated_at"] = now
+                    dispatched += 1
+                else:
+                    m["status"] = "failed"
+                    m["updated_at"] = now
+                    failed += 1
+                    
+    write_json(PROMO_MESSAGES_FILE, data)
+    return jsonify({
+        "dispatched": dispatched,
+        "failed": failed,
+        "instruction": "Trigger Cowork with: Send WhatsApps from Indaba"
+    })
 
-def log_lead_communication_internal(lead_id, message, direction):
-    """Helper to log communication without a request object."""
+@app.route('/api/promo/sender/reconcile', methods=['POST'])
+def reconcile_promo_results():
+    results_dir = os.path.join(DATA_DIR, 'cowork_results')
+    if not os.path.exists(results_dir):
+        return jsonify({"reconciled": 0, "message": "No results found."})
+        
+    files = glob.glob(os.path.join(results_dir, "*.json"))
+    if not files:
+        return jsonify({"reconciled": 0, "message": "No results found."})
+        
+    messages_data = read_json(PROMO_MESSAGES_FILE) or {"messages": []}
     leads_data = read_json(PROMO_LEADS_FILE) or {"leads": []}
-    lead = next((l for l in leads_data.get("leads", []) if l['id'] == lead_id), None)
-    if lead:
-        entry = {
-            "id": str(uuid.uuid4()),
-            "direction": direction,
-            "message": message,
-            "timestamp": datetime.utcnow().isoformat() + "Z"
-        }
-        lead.setdefault("communication_log", []).append(entry)
-        lead["updated_at"] = datetime.utcnow().isoformat() + "Z"
+    
+    reconciled = 0
+    sent_count = 0
+    failed_count = 0
+    
+    now = datetime.utcnow().isoformat() + "Z"
+    
+    for f_path in files:
+        try:
+            with open(f_path, 'r', encoding='utf-8') as f:
+                res = json.load(f)
+            
+            msg_id = res.get("message_id")
+            status = res.get("status")
+            
+            # Find matching message
+            msg = next((m for m in messages_data["messages"] if m["id"] == msg_id), None)
+            if msg:
+                if status == "sent":
+                    msg["status"] = "sent"
+                    msg["sent_at"] = res.get("sent_at", now)
+                    msg["updated_at"] = now
+                    sent_count += 1
+                    
+                    # Update lead log if applicable
+                    lead_id = msg.get("lead_id")
+                    if lead_id:
+                        lead = next((l for l in leads_data["leads"] if l["id"] == lead_id), None)
+                        if lead:
+                            if "communication_log" not in lead:
+                                lead["communication_log"] = []
+                            lead["communication_log"].append({
+                                "id": str(uuid.uuid4()),
+                                "timestamp": now,
+                                "direction": "outbound",
+                                "channel": "whatsapp",
+                                "message": msg["content"],
+                                "message_id": msg["id"]
+                            })
+                elif status == "failed":
+                    msg["status"] = "failed"
+                    msg["updated_at"] = now
+                    failed_count += 1
+                
+                reconciled += 1
+            
+            # Delete result file
+            os.remove(f_path)
+        except Exception as e:
+            print(f"Error processing result file {f_path}: {e}")
+            
+    if reconciled > 0:
+        write_json(PROMO_MESSAGES_FILE, messages_data)
         write_json(PROMO_LEADS_FILE, leads_data)
+        
+    return jsonify({
+        "reconciled": reconciled,
+        "sent": sent_count,
+        "failed": failed_count
+    })
 
 @app.route('/api/promo/sender/send_now', methods=['POST'])
-def send_message_now():
-    data = request.get_json()
-    msg_id = data.get('message_id')
+def promo_send_now():
+    data = request.json
+    if not data or 'message_id' not in data:
+        return jsonify({"error": "message_id missing"}), 400
+        
+    messages_data = read_json(PROMO_MESSAGES_FILE) or {"messages": []}
+    msg_id = data['message_id']
+    msg = next((m for m in messages_data["messages"] if m["id"] == msg_id), None)
     
-    msgs_data = read_json(PROMO_MESSAGES_FILE) or {"messages": []}
-    msgs = msgs_data.get("messages", [])
-    msg = next((m for m in msgs if m['id'] == msg_id), None)
     if not msg:
         return jsonify({"error": "Message not found"}), 404
         
-    if msg.get('status') == 'sent':
-        return jsonify({"error": "Message already sent"}), 409
+    if msg.get("status") != "queued":
+        return jsonify({"error": "Only queued messages can be dispatched"}), 409
         
-    result = trigger_cowork_send(msg)
-    if result.get('status') == 'sent':
-        msg['status'] = 'sent'
-        msg['sent_at'] = result.get('sent_at') or (datetime.utcnow().isoformat() + "Z")
-        if msg.get('source_ref') and 'lead_id' in msg['source_ref']:
-            log_lead_communication_internal(msg['source_ref']['lead_id'], msg['content'], "outbound")
+    if write_cowork_job(msg):
+        msg["status"] = "dispatched"
+        msg["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        write_json(PROMO_MESSAGES_FILE, messages_data)
+        return jsonify({
+            "ok": True,
+            "instruction": "Trigger Cowork with: Send WhatsApps from Indaba"
+        })
     else:
-        msg['status'] = 'failed'
-        msg['error'] = result.get('error', 'Unknown error')
-        
-    write_json(PROMO_MESSAGES_FILE, msgs_data)
-    return jsonify(msg)
+        msg["status"] = "failed"
+        msg["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        write_json(PROMO_MESSAGES_FILE, messages_data)
+        return jsonify({"ok": False, "error": "Failed to write job file"})
 
 @app.route('/api/promo/messages/bulk', methods=['POST'])
 def create_bulk_messages():
@@ -2171,15 +2200,11 @@ def send_single_message():
     
     if not scheduled_at:
         # Send now
-        result = trigger_cowork_send(new_message)
-        if result.get('status') == 'sent':
-            new_message['status'] = 'sent'
-            new_message['sent_at'] = result.get('sent_at') or (datetime.utcnow().isoformat() + "Z")
-            if lead_id:
-                log_lead_communication_internal(lead_id, content, "outbound")
+        if write_cowork_job(new_message):
+            new_message['status'] = 'dispatched'
         else:
             new_message['status'] = 'failed'
-            new_message['error'] = result.get('error', 'Unknown error')
+            new_message['error'] = 'Failed to write job file'
     
     messages_data["messages"].append(new_message)
     write_json(PROMO_MESSAGES_FILE, messages_data)
