@@ -111,6 +111,165 @@ CTA", "cliffhanger_note": "one sentence explaining why this is the break \
 point"}}
 - Return only the JSON array. No preamble. No explanation."""
 
+LEVIATHAN_QUESTIONS = [
+  {"id":"q1","part":1,"part_label":"The Physical World",
+   "question":"What does this world look like from a train window or its equivalent?",
+   "genome_refs":["terrain","world_rules"]},
+  {"id":"q2","part":1,"part_label":"The Physical World",
+   "question":"What is the dominant material of construction and what does that say about the people who built it?",
+   "genome_refs":["terrain","historical_catastrophe"]},
+  {"id":"q3","part":1,"part_label":"The Physical World",
+   "question":"What does the sky look like and what relationship do people have with it?",
+   "genome_refs":["terrain","fragments"]},
+  {"id":"q4","part":1,"part_label":"The Physical World",
+   "question":"What grows here and what has been cleared paved or poisoned?",
+   "genome_refs":["terrain","world_rules"]},
+  {"id":"q5","part":1,"part_label":"The Physical World",
+   "question":"What is the most dangerous place in this world and who lives there?",
+   "genome_refs":["terrain","historical_catastrophe"]},
+  {"id":"q6","part":2,"part_label":"Time and History",
+   "question":"How long ago was the last catastrophe and does anyone alive remember it?",
+   "genome_refs":["historical_catastrophe","thematic_values"]},
+  {"id":"q7","part":2,"part_label":"Time and History",
+   "question":"What is the official version of history and who benefits from it?",
+   "genome_refs":["historical_catastrophe","world_rules"]},
+  {"id":"q8","part":2,"part_label":"Time and History",
+   "question":"What do children learn about the past and what are they not told?",
+   "genome_refs":["historical_catastrophe","fragments"]},
+  {"id":"q9","part":2,"part_label":"Time and History",
+   "question":"What physical evidence of the past has survived and what has been destroyed?",
+   "genome_refs":["historical_catastrophe","terrain"]},
+  {"id":"q10","part":2,"part_label":"Time and History",
+   "question":"Is the world getting better or worse and who decides?",
+   "genome_refs":["thematic_values","world_rules"]},
+  {"id":"q11","part":3,"part_label":"Power and Order",
+   "question":"Who has the power to make others disappear and how do they justify it?",
+   "genome_refs":["world_rules","thematic_values"]},
+  {"id":"q12","part":3,"part_label":"Power and Order",
+   "question":"What holds this world together and what would cause it to collapse?",
+   "genome_refs":["world_rules","historical_catastrophe"]},
+  {"id":"q13","part":3,"part_label":"Power and Order",
+   "question":"Who enforces the rules and what happens to them if they refuse?",
+   "genome_refs":["world_rules","terrain"]},
+  {"id":"q14","part":3,"part_label":"Power and Order",
+   "question":"What is the most dangerous thing a person can do socially in this world?",
+   "genome_refs":["world_rules","thematic_values"]},
+  {"id":"q15","part":3,"part_label":"Power and Order",
+   "question":"Where does legitimate authority come from in this world?",
+   "genome_refs":["world_rules","historical_catastrophe"]},
+  {"id":"q16","part":4,"part_label":"Economy and Scarcity",
+   "question":"What does everyone want and almost nobody can have?",
+   "genome_refs":["world_rules","terrain"]},
+  {"id":"q17","part":4,"part_label":"Economy and Scarcity",
+   "question":"How do people get what they need and what do they have to give up for it?",
+   "genome_refs":["terrain","thematic_values"]},
+  {"id":"q18","part":4,"part_label":"Economy and Scarcity",
+   "question":"What is considered wealth here and how is it displayed or concealed?",
+   "genome_refs":["terrain","fragments"]},
+  {"id":"q19","part":4,"part_label":"Economy and Scarcity",
+   "question":"Who does the work nobody wants to do and what do they get for it?",
+   "genome_refs":["terrain","world_rules"]},
+  {"id":"q20","part":4,"part_label":"Economy and Scarcity",
+   "question":"What can money not buy in this world?",
+   "genome_refs":["world_rules","thematic_values"]},
+  {"id":"q21","part":5,"part_label":"Society and Belonging",
+   "question":"How do people signal which group they belong to?",
+   "genome_refs":["terrain","fragments"]},
+  {"id":"q22","part":5,"part_label":"Society and Belonging",
+   "question":"What is the worst thing you can call someone here and why?",
+   "genome_refs":["world_rules","thematic_values"]},
+  {"id":"q23","part":5,"part_label":"Society and Belonging",
+   "question":"How are outsiders treated and what must they do to be accepted?",
+   "genome_refs":["terrain","world_rules"]},
+  {"id":"q24","part":5,"part_label":"Society and Belonging",
+   "question":"What do people celebrate together and what does that reveal about their values?",
+   "genome_refs":["fragments","thematic_values"]},
+  {"id":"q25","part":5,"part_label":"Society and Belonging",
+   "question":"Who is invisible in this world and who made them that way?",
+   "genome_refs":["world_rules","historical_catastrophe"]},
+  {"id":"q26","part":6,"part_label":"Intimacy and Family",
+   "question":"How do people form lasting bonds here and what threatens them?",
+   "genome_refs":["thematic_values","fragments"]},
+  {"id":"q27","part":6,"part_label":"Intimacy and Family",
+   "question":"What do parents most fear for their children?",
+   "genome_refs":["world_rules","thematic_values"]},
+  {"id":"q28","part":6,"part_label":"Intimacy and Family",
+   "question":"How is romantic love regarded — as necessity luxury or danger?",
+   "genome_refs":["thematic_values","world_rules"]},
+  {"id":"q29","part":6,"part_label":"Intimacy and Family",
+   "question":"What obligations does a person have to their family and what happens if they refuse?",
+   "genome_refs":["world_rules","thematic_values"]},
+  {"id":"q30","part":6,"part_label":"Intimacy and Family",
+   "question":"How do people grieve here and who is allowed to?",
+   "genome_refs":["fragments","thematic_values"]},
+  {"id":"q31","part":7,"part_label":"Body and Spirit",
+   "question":"What do people believe happens after death and how does that shape how they live?",
+   "genome_refs":["world_rules","thematic_values"]},
+  {"id":"q32","part":7,"part_label":"Body and Spirit",
+   "question":"What counts as sacred here and who controls access to it?",
+   "genome_refs":["world_rules","historical_catastrophe"]},
+  {"id":"q33","part":7,"part_label":"Body and Spirit",
+   "question":"How do people mark the transition from child to adult?",
+   "genome_refs":["fragments","world_rules"]},
+  {"id":"q34","part":7,"part_label":"Body and Spirit",
+   "question":"What do people do with their bodies to signal devotion rebellion or status?",
+   "genome_refs":["terrain","fragments"]},
+  {"id":"q35","part":7,"part_label":"Body and Spirit",
+   "question":"What is considered beautiful here and who decides?",
+   "genome_refs":["terrain","thematic_values"]},
+  {"id":"q36","part":8,"part_label":"Language and Knowledge",
+   "question":"What words does this world have that ours does not?",
+   "genome_refs":["fragments","world_rules"]},
+  {"id":"q37","part":8,"part_label":"Language and Knowledge",
+   "question":"What can people not say out loud and how do they say it anyway?",
+   "genome_refs":["world_rules","thematic_values"]},
+  {"id":"q38","part":8,"part_label":"Language and Knowledge",
+   "question":"Who controls what is written down and what happens to forbidden texts?",
+   "genome_refs":["world_rules","historical_catastrophe"]},
+  {"id":"q39","part":8,"part_label":"Language and Knowledge",
+   "question":"What stories do people tell their children to explain why the world is the way it is?",
+   "genome_refs":["historical_catastrophe","fragments"]},
+  {"id":"q40","part":8,"part_label":"Language and Knowledge",
+   "question":"What counts as proof here and who decides what is true?",
+   "genome_refs":["world_rules","thematic_values"]},
+  {"id":"q41","part":9,"part_label":"Your Characters in This World",
+   "question":"What does your protagonist want that this world makes nearly impossible to have?",
+   "genome_refs":["characters","world_rules"]},
+  {"id":"q42","part":9,"part_label":"Your Characters in This World",
+   "question":"Which of this world's rules does your protagonist believe in most deeply?",
+   "genome_refs":["characters","world_rules"]},
+  {"id":"q43","part":9,"part_label":"Your Characters in This World",
+   "question":"Which of this world's rules is your protagonist unknowingly breaking?",
+   "genome_refs":["characters","thematic_values"]},
+  {"id":"q44","part":9,"part_label":"Your Characters in This World",
+   "question":"What part of this world has your protagonist never seen and why?",
+   "genome_refs":["characters","terrain"]},
+  {"id":"q45","part":9,"part_label":"Your Characters in This World",
+   "question":"How has this world wounded your protagonist before the story begins?",
+   "genome_refs":["characters","historical_catastrophe"]},
+  {"id":"q46","part":9,"part_label":"Your Characters in This World",
+   "question":"What does your protagonist believe about this world that is wrong?",
+   "genome_refs":["characters","thematic_values"]},
+  {"id":"q47","part":9,"part_label":"Your Characters in This World",
+   "question":"Which character is most at home in this world and which is most at odds with it?",
+   "genome_refs":["characters","world_rules"]},
+  {"id":"q48","part":10,"part_label":"The Story Genome Check",
+   "question":"Read your Story Genome. What question does it raise that it does not answer?",
+   "genome_refs":["characters","thematic_values","world_rules"]},
+  {"id":"q49","part":10,"part_label":"The Story Genome Check",
+   "question":"Which character's terrain feels thinnest and needs more specificity?",
+   "genome_refs":["characters","terrain"]},
+  {"id":"q50","part":10,"part_label":"The Story Genome Check",
+   "question":"Where does your world feel arbitrary rather than inevitable?",
+   "genome_refs":["world_rules","historical_catastrophe"]},
+  {"id":"q51","part":10,"part_label":"The Story Genome Check",
+   "question":"What is the single most important thing a reader must understand about this world before the story makes sense?",
+   "genome_refs":["world_rules","thematic_values","terrain"]},
+  {"id":"q52","part":10,"part_label":"The Story Genome Check",
+   "question":"If you removed all the plot from this world what would still be in conflict?",
+   "genome_refs":["thematic_values","characters","world_rules"]}
+]
+
 _DEFAULTS = {
     'inbox_max':         15,
     'dormant_max':       25,
@@ -348,6 +507,54 @@ def migrate():
     if overdue_count > 0:
         print(f'[Migrate] Flagged {overdue_count} messages as overdue')
 
+    # 10. Living Writer: Initialise and Migrate
+    os.makedirs(os.path.join(DATA_DIR, 'exports'), exist_ok=True)
+    lw_data = read_json(LIVING_WRITER_FILE)
+    if lw_data is None:
+        lw_data = { "stories": [] }
+        write_json(LIVING_WRITER_FILE, lw_data)
+        print('[Migrate] Initialised living_writer.json')
+    else:
+        changed = False
+        for s in lw_data.get("stories", []):
+            if "current_stage" not in s:
+                s["current_stage"] = 1
+                changed = True
+            if "stage_completion" not in s:
+                s["stage_completion"] = {"1":False,"2":False,"3":False,"4":False,"5":False,"6":False,"7":False}
+                changed = True
+            if "draft_complete" not in s:
+                s["draft_complete"] = False
+                changed = True
+            if "draft_complete_at" not in s:
+                s["draft_complete_at"] = None
+                changed = True
+            if "stage1" not in s:
+                s["stage1"] = { "concept_note": "", "devonthink_nudge_shown": False }
+                changed = True
+            if "stage2" not in s:
+                s["stage2"] = { "characters": [], "thematic_values": "", "historical_catastrophe": None, "fragments": [], "world_rules": None, "leviathan_answers": {}, "story_genome": "", "world_of_story_doc": "" }
+                changed = True
+            if "stage3" not in s:
+                s["stage3"] = { "arc_brainstorms": [], "selected_arc_index": None, "four_episode_loglines": [], "tsv_output": "" }
+                changed = True
+            if "stage4" not in s:
+                s["stage4"] = { "treesheets_files": [] }
+                changed = True
+            if "stage5" not in s:
+                s["stage5"] = { "treatment_scenes": [], "descriptionary": [] }
+                changed = True
+            if "stage6" not in s:
+                s["stage6"] = { "narrative_summary": "", "anki_deck_exported": False, "reconstruction_sessions": [] }
+                changed = True
+            if "stage7" not in s:
+                s["stage7"] = { "export_targets": [], "session_notes": "" }
+                changed = True
+        if changed:
+            write_json(LIVING_WRITER_FILE, lw_data)
+            print('[Migrate] Updated living_writer.json payload schema')
+
+
 # ── Plugin loader ─────────────────────────────────────────────────────────────
 
 _plugins = {}
@@ -536,12 +743,7 @@ def api_hub_summary():
     # 2. Living Writer Summary
     lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
     stories = lw_data.get("stories", [])
-    furthest = "None"
-    draft_complete = 0
-    if stories:
-        max_stage = max(s.get('current_stage', 1) for s in stories)
-        furthest = f"Stage {max_stage}"
-        draft_complete = sum(1 for s in stories if s.get('draft_complete'))
+    furthest = max((s.get("current_stage", 1) for s in stories), default=0)
     
     # 3. Publishing Central Summary
     pipeline = read_json('content_pipeline.json') or []
@@ -574,7 +776,7 @@ def api_hub_summary():
         'living_writer': {
             'stories_in_pipeline': len(stories),
             'furthest_stage': furthest,
-            'draft_complete_count': draft_complete
+            'draft_complete_count': sum(1 for s in stories if s.get("draft_complete", False))
         },
         'publishing_central': {
             'chapters_live': chapters_live,
@@ -2232,194 +2434,6 @@ def update_promo_settings():
     write_json(PROMO_SETTINGS_FILE, data)
     return jsonify(data)
 
-# ── LIVING WRITER ──
-
-@app.route('/api/lw/stories', methods=['GET'])
-def list_lw_stories():
-    data = read_json(LIVING_WRITER_FILE) or {"stories": []}
-    return jsonify(data)
-
-@app.route('/api/lw/stories', methods=['POST'])
-def create_lw_story():
-    data = request.get_json()
-    title = data.get('title', '').strip()
-    if not title:
-        return jsonify({"error": "title is required"}), 400
-        
-    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
-    now = datetime.utcnow().isoformat() + "Z"
-    new_story = {
-        "id": str(uuid.uuid4()),
-        "title": title,
-        "author": data.get('author', ''),
-        "current_stage": 1,
-        "draft_complete": False,
-        "indaba_project_id": data.get('indaba_project_id'),
-        "stage1": {"concept_note": "", "devonthink_nudge_shown": False},
-        "stage2": {"characters": [], "fragments": [], "world_rules": "", "leviathan": ""},
-        "stage3": {"arc_brainstorm": "", "logline": ""},
-        "stage4": {"treesheets_path": ""},
-        "stage5": {"scenes": [], "descriptionary": []},
-        "stage6": {"narrative_summary": "", "reconstruction_log": []},
-        "stage7": {"export_targets": []},
-        "created_at": now,
-        "updated_at": now
-    }
-    lw_data["stories"].append(new_story)
-    write_json(LIVING_WRITER_FILE, lw_data)
-    return jsonify(new_story), 201
-
-@app.route('/api/lw/stories/<story_id>', methods=['GET'])
-def get_lw_story(story_id):
-    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
-    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
-    if not story:
-        return jsonify({"error": "Story not found"}), 404
-    return jsonify(story)
-
-@app.route('/api/lw/stories/<story_id>', methods=['PUT'])
-def update_lw_story(story_id):
-    data = request.get_json()
-    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
-    stories = lw_data.get("stories", [])
-    
-    idx = next((i for i, s in enumerate(stories) if s['id'] == story_id), None)
-    if idx is None:
-        return jsonify({"error": "Story not found"}), 404
-        
-    story = stories[idx]
-    # Merge keys
-    for k, v in data.items():
-        if k in story:
-            if isinstance(story[k], dict) and isinstance(v, dict):
-                story[k].update(v)
-            else:
-                story[k] = v
-                
-    story['updated_at'] = datetime.utcnow().isoformat() + "Z"
-    write_json(LIVING_WRITER_FILE, lw_data)
-    return jsonify(story)
-
-@app.route('/api/lw/stories/<story_id>', methods=['DELETE'])
-def delete_lw_story(story_id):
-    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
-    stories = lw_data.get("stories", [])
-    if not any(s['id'] == story_id for s in stories):
-        return jsonify({"error": "Story not found"}), 404
-    lw_data["stories"] = [s for s in stories if s['id'] != story_id]
-    write_json(LIVING_WRITER_FILE, lw_data)
-    return jsonify({"ok": True})
-
-@app.route('/api/lw/stories/<story_id>/advance', methods=['POST'])
-def advance_story_stage(story_id):
-    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
-    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
-    if not story:
-        return jsonify({"error": "Story not found"}), 404
-        
-    curr = story.get('current_stage', 1)
-    if curr >= 7:
-        return jsonify({"error": "Story is already at the final stage"}), 409
-        
-    story['current_stage'] = curr + 1
-    story['updated_at'] = datetime.utcnow().isoformat() + "Z"
-    write_json(LIVING_WRITER_FILE, lw_data)
-    return jsonify(story)
-
-@app.route('/api/lw/stories/<story_id>/complete', methods=['POST'])
-def mark_story_draft_complete(story_id):
-    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
-    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
-    if not story:
-        return jsonify({"error": "Story not found"}), 404
-        
-    story['draft_complete'] = True
-    story['updated_at'] = datetime.utcnow().isoformat() + "Z"
-    write_json(LIVING_WRITER_FILE, lw_data)
-    
-    # Indaba signal (Section 3.1)
-    projects = read_json('projects.json') or []
-    matching = None
-    if story.get('indaba_project_id'):
-        matching = next((p for p in projects if p['id'] == story['indaba_project_id']), None)
-    
-    if not matching:
-        # Fallback to title matching
-        matching = next((p for p in projects if p.get('name') == story['title'] and p.get('pipeline') == 'creative_development'), None)
-        
-    if matching:
-        matching['phase'] = "Draft Complete"
-        now_iso = datetime.now().isoformat()
-        note = f"LivingWriter: draft-complete signal received at {now_iso}"
-        matching['last_session_note'] = note
-        matching['last_session_at'] = now_iso
-        matching['updated_at'] = now_iso
-        write_json('projects.json', projects)
-        print(f"[LW Signal] Updated project {matching['id']} to Draft Complete")
-        
-    return jsonify({"ok": True})
-
-@app.route('/api/lw/stories/<story_id>/cruxes', methods=['GET'])
-def get_story_cruxes(story_id):
-    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
-    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
-    if not story:
-        return jsonify({"error": "Story not found"}), 404
-        
-    scenes = story.get('stage5', {}).get('scenes', [])
-    cruxes = [
-        {"slug": s['slug'], "crux": s['crux']} 
-        for s in scenes if s.get('crux')
-    ]
-    return jsonify(cruxes)
-
-@app.route('/api/lw/stories/<story_id>/stage4/open_file', methods=['POST'])
-def open_treesheets_file(story_id):
-    data = request.get_json()
-    filepath = data.get('filepath')
-    if not filepath:
-        return jsonify({"error": "filepath is required"}), 400
-        
-    if not os.path.exists(filepath):
-        return jsonify({"error": f"File not found: {filepath}"}), 500
-        
-    import subprocess
-    import platform
-    try:
-        if platform.system() == 'Darwin':
-            subprocess.run(['open', filepath])
-        elif platform.system() == 'Windows':
-            os.startfile(filepath)
-        else:
-            subprocess.run(['xdg-open', filepath])
-        return jsonify({"ok": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/lw/stories/<story_id>/export/anki', methods=['POST'])
-def export_anki_reconstruction(story_id):
-    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
-    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
-    if not story:
-        return jsonify({"error": "Story not found"}), 404
-        
-    summary = story.get('stage6', {}).get('narrative_summary', '')
-    if not summary:
-        return jsonify({"error": "No narrative summary to export."}), 400
-        
-    # Mocking Anki export: create a text file in data/exports
-    os.makedirs(os.path.join(DATA_DIR, 'exports'), exist_ok=True)
-    filename = f"anki_export_{story_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-    filepath = os.path.join(DATA_DIR, 'exports', filename)
-    
-    # Split summary into paragraphs as 'cards'
-    cards = summary.split('\n\n')
-    with open(filepath, 'w', encoding='utf-8') as f:
-        for i, card in enumerate(cards):
-            f.write(f"Front: Reconstruction Step {i+1}\tBack: {card.strip()}\n")
-            
-    return jsonify({"ok": True, "filename": filename, "filepath": filepath})
-
 # ── Earnings ──────────────────────────────────────────────────────────────────
 
 EARNINGS_FILE = 'earnings.json'
@@ -2506,6 +2520,468 @@ def index():
 @app.route('/static/<path:filename>')
 def static_files(filename):
     return send_from_directory(os.path.join(BASE_DIR, 'static'), filename)
+
+
+# ── LIVING WRITER ──
+
+@app.route('/api/lw/stories', methods=['GET'])
+def get_lw_stories():
+    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
+    return jsonify({"stories": lw_data.get("stories", [])})
+
+@app.route('/api/lw/stories', methods=['POST'])
+def create_lw_story():
+    data = request.get_json() or {}
+    title = data.get('title')
+    if not title or not title.strip():
+        return jsonify({"error": "title is required"}), 400
+        
+    settings = read_json('settings.json') or {}
+    lw_max_stories = settings.get('lw_max_stories', 20)
+    
+    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
+    if len(lw_data.get("stories", [])) >= lw_max_stories:
+        return jsonify({"error": "Maximum number of stories in pipeline reached"}), 409
+        
+    now = datetime.utcnow().isoformat() + "Z"
+    new_story = {
+        "id": str(uuid.uuid4()),
+        "title": title.strip(),
+        "created_at": now,
+        "updated_at": now,
+        "current_stage": 1,
+        "stage_completion": {"1":False,"2":False,"3":False,"4":False,"5":False,"6":False,"7":False},
+        "draft_complete": False,
+        "draft_complete_at": None,
+        "stage1": { "concept_note": "", "devonthink_nudge_shown": False },
+        "stage2": { "characters": [], "thematic_values": "", "historical_catastrophe": None, "fragments": [], "world_rules": None, "leviathan_answers": {}, "story_genome": "", "world_of_story_doc": "" },
+        "stage3": { "arc_brainstorms": [], "selected_arc_index": None, "four_episode_loglines": [], "tsv_output": "" },
+        "stage4": { "treesheets_files": [] },
+        "stage5": { "treatment_scenes": [], "descriptionary": [] },
+        "stage6": { "narrative_summary": "", "anki_deck_exported": False, "reconstruction_sessions": [] },
+        "stage7": { "export_targets": [], "session_notes": "" }
+    }
+    lw_data["stories"].append(new_story)
+    write_json(LIVING_WRITER_FILE, lw_data)
+    return jsonify(new_story), 201
+
+@app.route('/api/lw/stories/<story_id>', methods=['GET'])
+def get_lw_story(story_id):
+    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
+    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
+    if not story:
+        return jsonify({"error": "Story not found"}), 404
+    return jsonify(story)
+
+@app.route('/api/lw/stories/<story_id>', methods=['PUT'])
+def update_lw_story(story_id):
+    data = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+        
+    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
+    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
+    if not story:
+        return jsonify({"error": "Story not found"}), 404
+        
+    data.pop('id', None)
+    data.pop('created_at', None)
+    
+    def deep_update(d, u):
+        for k, v in u.items():
+            if isinstance(v, dict) and k in d and isinstance(d[k], dict):
+                deep_update(d[k], v)
+            else:
+                d[k] = v
+                
+    deep_update(story, data)
+    story['updated_at'] = datetime.utcnow().isoformat() + "Z"
+    
+    write_json(LIVING_WRITER_FILE, lw_data)
+    return jsonify(story)
+
+@app.route('/api/lw/stories/<story_id>', methods=['DELETE'])
+def delete_lw_story(story_id):
+    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
+    stories = lw_data.get("stories", [])
+    if not any(s['id'] == story_id for s in stories):
+        return jsonify({"error": "Story not found"}), 404
+        
+    lw_data["stories"] = [s for s in stories if s['id'] != story_id]
+    write_json(LIVING_WRITER_FILE, lw_data)
+    return jsonify({"ok": True})
+
+@app.route('/api/lw/stories/<story_id>/advance', methods=['POST'])
+def advance_lw_story(story_id):
+    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
+    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
+    if not story:
+        return jsonify({"error": "Story not found"}), 404
+        
+    stage = story.get('current_stage', 1)
+    if stage >= 7:
+        return jsonify({"error": "Story is already at the final stage"}), 409
+        
+    if stage == 2:
+        chars = story.get('stage2', {}).get('characters', [])
+        if len(chars) < 2:
+            return jsonify({"error": "Stage 2 requires at least 2 Character Arc Outlines before advancing"}), 409
+    elif stage == 5:
+        scenes = story.get('stage5', {}).get('treatment_scenes', [])
+        if len(scenes) == 0:
+            return jsonify({"error": "Add at least one treatment scene before advancing from Stage 5"}), 409
+            
+    story['stage_completion'][str(stage)] = True
+    story['current_stage'] = stage + 1
+    story['updated_at'] = datetime.utcnow().isoformat() + "Z"
+    write_json(LIVING_WRITER_FILE, lw_data)
+    return jsonify(story)
+
+@app.route('/api/lw/stories/<story_id>/complete', methods=['POST'])
+def complete_lw_story(story_id):
+    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
+    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
+    if not story:
+        return jsonify({"error": "Story not found"}), 404
+        
+    if story.get('current_stage', 1) < 7:
+        return jsonify({"error": "Story must reach Stage 7 before marking draft complete"}), 409
+        
+    now = datetime.utcnow().isoformat() + "Z"
+    story['draft_complete'] = True
+    story['draft_complete_at'] = now
+    story['stage_completion']["7"] = True
+    story['updated_at'] = now
+    write_json(LIVING_WRITER_FILE, lw_data)
+    
+    projects = read_json('projects.json') or []
+    for p in projects:
+        if p.get('name') == story.get('title') and p.get('pipeline') == "Creative Development":
+            p['phase'] = "Draft Complete"
+            if 'session_notes' in p:
+                if p['session_notes']:
+                    p['session_notes'] += f"\n\nLivingWriter: draft-complete signal received at {now}"
+                else:
+                    p['session_notes'] = f"LivingWriter: draft-complete signal received at {now}"
+            write_json('projects.json', projects)
+            print(f"[LivingWriter] Marked project '{p['name']}' as draft-complete")
+            break
+            
+    return jsonify(story)
+
+@app.route('/api/lw/stories/<story_id>/cruxes', methods=['GET'])
+def get_lw_story_cruxes(story_id):
+    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
+    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
+    if not story:
+        return jsonify({"error": "Story not found"}), 404
+        
+    scenes = story.get('stage5', {}).get('treatment_scenes', [])
+    try:
+        scenes = sorted(scenes, key=lambda x: int(x.get('order', 0)))
+    except (TypeError, ValueError):
+        pass
+        
+    res = [{"order": s.get('order', 0), "slug_line": s.get('slug_line', ''), "crux": s.get('crux', '')} for s in scenes]
+    return jsonify(res)
+
+@app.route('/api/lw/stories/<story_id>/stage4/open_file', methods=['POST'])
+def open_lw_stage4_file(story_id):
+    data = request.get_json() or {}
+    filepath = data.get('filepath')
+    if not filepath or not filepath.strip():
+        return jsonify({"error": "filepath is required"}), 400
+        
+    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
+    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
+    if not story:
+        return jsonify({"error": "Story not found"}), 404
+        
+    import subprocess, sys
+    try:
+        if sys.platform == "darwin":
+            subprocess.call(["open", filepath])
+        elif sys.platform == "win32":
+            os.startfile(filepath)
+        else:
+            subprocess.call(["xdg-open", filepath])
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": "Could not open file. Check that the path is correct and the file exists."}), 500
+
+@app.route('/api/lw/stories/<story_id>/stage2/derive_thematic_values', methods=['POST'])
+def derive_thematic_values(story_id):
+    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
+    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
+    if not story:
+        return jsonify({"error": "Story not found"}), 404
+        
+    chars = story.get('stage2', {}).get('characters', [])
+    if len(chars) < 2:
+        return jsonify({"error": "Add at least 2 characters before deriving thematic values"}), 400
+        
+    char_lines = []
+    for c in chars:
+        name = c.get('name', 'Character N')
+        crucible = c.get('crucible', '')
+        char_lines.append(f"Character: {name}\nCrucible: {crucible}")
+    char_str = "\n\n".join(char_lines)
+    
+    messages = [
+        {"role": "system", "content": "You are a story development assistant helping a writer identify the dominant thematic tensions in their story. Return only plain prose, no bullet points, no headers, no markdown. Maximum 300 words."},
+        {"role": "user", "content": f"Here are the character crucibles from my story:\n{char_str}\nIdentify the 2-3 dominant value tensions that emerge across these characters. For each tension write one paragraph (max 100 words) describing what this world does to people who choose one value over the other. Write in present tense. Be specific and concrete, not abstract."}
+    ]
+    
+    try:
+        res_text = call_ai("lw_ai", messages, max_tokens=600)
+        return jsonify({"thematic_values": res_text})
+    except Exception as e:
+        return jsonify({"error": "AI provider unavailable", "detail": str(e)}), 502
+
+@app.route('/api/lw/stories/<story_id>/stage3/arc_brainstorm', methods=['POST'])
+def generate_arc_brainstorm(story_id):
+    data = request.get_json() or {}
+    char_id = data.get('character_id')
+    if not char_id:
+        return jsonify({"error": "character_id is required"}), 400
+        
+    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
+    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
+    if not story:
+        return jsonify({"error": "Story not found"}), 404
+        
+    char = next((c for c in story.get('stage2', {}).get('characters', []) if c.get('id') == char_id), None)
+    if not char:
+        return jsonify({"error": "Character not found"}), 404
+        
+    genome = story.get('stage2', {}).get('story_genome', '')[:500]
+    
+    sys_msg = "You are a story structure expert using Lewis Jorstad's Integrated Inner and Outer Journey framework from Mastering Character Arcs. Return only valid JSON, no markdown, no explanation."
+    user_msg = f"Character data:\nOne line: {char.get('character_in_one_line', '')}\nWound: {char.get('wound', '')}\nLie: {char.get('lie', '')}\nCrucible: {char.get('crucible', '')}\nTerrain: {char.get('terrain', '')}\nTransformation: {char.get('transformation', '')}\nWhat they leave behind: {char.get('what_they_leave_behind', '')}\nStory world context: {genome}\n\nGenerate 3 distinct arc possibilities. Return a JSON array of exactly 3 objects. Each object must have these keys: primary_arc_type (Positive, Negative, or Flat), primary_arc_rationale (string), secondary_arc_type (string), secondary_arc_explanation (string), lie (string), truth (string), core_wound (string), arc_summary (string, max 5 sentences of max 15 words each), editorial_recommendation (string)"
+    
+    try:
+        res_text = call_ai("lw_ai", [{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}], max_tokens=2000)
+        if res_text.startswith("```json"):
+            res_text = res_text[7:].strip()
+            if res_text.endswith("```"):
+                res_text = res_text[:-3].strip()
+        parsed = json.loads(res_text)
+        if not isinstance(parsed, list):
+            raise ValueError("Expected an array")
+            
+        new_bs = []
+        for p in parsed:
+            bs = {
+                "id": str(uuid.uuid4()),
+                "character_id": char_id,
+                "primary_arc_type": p.get("primary_arc_type"),
+                "primary_arc_rationale": p.get("primary_arc_rationale"),
+                "secondary_arc_type": p.get("secondary_arc_type"),
+                "secondary_arc_explanation": p.get("secondary_arc_explanation"),
+                "lie": p.get("lie"),
+                "truth": p.get("truth"),
+                "core_wound": p.get("core_wound"),
+                "arc_summary": p.get("arc_summary"),
+                "editorial_recommendation": p.get("editorial_recommendation")
+            }
+            new_bs.append(bs)
+            story['stage3']['arc_brainstorms'].append(bs)
+            
+        story['updated_at'] = datetime.utcnow().isoformat() + "Z"
+        write_json(LIVING_WRITER_FILE, lw_data)
+        return jsonify({"brainstorms": new_bs})
+    except Exception as e:
+        return jsonify({"error": "AI returned invalid format. Try again.", "detail": str(e)}), 502
+
+@app.route('/api/lw/stories/<story_id>/stage3/generate_loglines', methods=['POST'])
+def generate_loglines(story_id):
+    data = request.get_json() or {}
+    bs_id = data.get('brainstorm_id')
+    if not bs_id:
+        return jsonify({"error": "brainstorm_id is required"}), 400
+        
+    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
+    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
+    if not story:
+        return jsonify({"error": "Story not found"}), 404
+        
+    bs = next((b for b in story.get('stage3', {}).get('arc_brainstorms', []) if b.get('id') == bs_id), None)
+    if not bs:
+        return jsonify({"error": "Brainstorm not found"}), 404
+        
+    sys_msg = "You are a story structure expert. Return only valid JSON, no markdown, no explanation."
+    user_msg = f"Arc data:\nPrimary arc: {bs.get('primary_arc_type')} — {bs.get('primary_arc_rationale')}\nSecondary arc: {bs.get('secondary_arc_type')}\nThe lie: {bs.get('lie')}\nThe truth: {bs.get('truth')}\nArc summary: {bs.get('arc_summary')}\n\nGenerate exactly 4 act-level loglines using Lewis Jorstad's Integrated Inner and Outer Journey framework.\nRules:\n- Exactly 25 words each\n- Present tense, third person\n- Each logline weaves inner transformation and outer plot conflict simultaneously\n- Together they trace: Catalyst, Turning Point, Regression, Choice\n\nReturn a JSON array of exactly 4 objects. Each object:\n{{ 'act': 'Act 1' or 'Act 2 Part 1' or 'Act 2 Part 2' or 'Act 3', 'logline': 'exactly 25 words' }}"
+    
+    try:
+        res_text = call_ai("lw_ai", [{"role":"system","content":sys_msg},{"role":"user","content":user_msg}], max_tokens=800)
+        if res_text.startswith("```json"):
+            res_text = res_text[7:].strip()
+            if res_text.endswith("```"):
+                res_text = res_text[:-3].strip()
+        parsed = json.loads(res_text)
+        if not isinstance(parsed, list) or len(parsed) != 4:
+            raise ValueError("Expected an array of length 4")
+            
+        story['stage3']['four_episode_loglines'] = parsed
+        tsv_output = "Act\tLogline\n" + "\n".join([f"{p.get('act')}\t{p.get('logline')}" for p in parsed])
+        story['stage3']['tsv_output'] = tsv_output
+        story['updated_at'] = datetime.utcnow().isoformat() + "Z"
+        write_json(LIVING_WRITER_FILE, lw_data)
+        return jsonify({"loglines": parsed, "tsv_output": tsv_output})
+    except Exception as e:
+        return jsonify({"error": "AI returned invalid format. Try again.", "detail": str(e)}), 502
+
+@app.route('/api/lw/stories/<story_id>/stage2/leviathan_assist', methods=['POST'])
+def leviathan_assist(story_id):
+    data = request.get_json() or {}
+    q_id = data.get('question_id')
+    if not q_id:
+        return jsonify({"error": "question_id is required"}), 400
+        
+    q_def = next((q for q in LEVIATHAN_QUESTIONS if q['id'] == q_id), None)
+    if not q_def:
+        return jsonify({"error": "Invalid question_id"}), 400
+        
+    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
+    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
+    if not story:
+        return jsonify({"error": "Story not found"}), 404
+        
+    curr_answer = story.get('stage2', {}).get('leviathan_answers', {}).get(q_id, "")
+    
+    genome_context = []
+    stage2 = story.get('stage2', {})
+    for ref in q_def.get('genome_refs', []):
+        if ref == 'characters':
+            chars = stage2.get('characters', [])
+            cl = [f"{c.get('name')}: {c.get('character_in_one_line')}" for c in chars]
+            genome_context.append("Characters:\n" + "\n".join(cl))
+        else:
+            val = stage2.get(ref)
+            if val:
+                genome_context.append(f"{ref}: {val}")
+                
+    g_str = "\n\n".join(genome_context)
+    
+    sys_msg = "You are a worldbuilding assistant helping a writer develop their story world. Be specific and concrete. Draw only from the writer's own established material. Maximum 200 words."
+    user_msg = f"Question: {q_def['question']}\nRelevant story material:\n{g_str}\nCurrent answer (may be empty): {curr_answer}\nSuggest a specific, concrete answer to this question that is consistent with the established material. Also flag any contradictions between the current answer and established material. Return JSON:\n{{ 'suggestion': 'string', 'contradictions': ['string'] }}"
+    
+    try:
+        res_text = call_ai("lw_ai", [{"role":"system","content":sys_msg},{"role":"user","content":user_msg}], max_tokens=400)
+        if res_text.startswith("```json"):
+            res_text = res_text[7:].strip()
+            if res_text.endswith("```"):
+                res_text = res_text[:-3].strip()
+        parsed = json.loads(res_text)
+        return jsonify({"suggestion": parsed.get("suggestion", ""), "contradictions": parsed.get("contradictions", [])})
+    except Exception as e:
+        return jsonify({"error": "AI returned invalid format.", "detail": str(e)}), 502
+
+@app.route('/api/lw/stories/<story_id>/stage6/export_anki', methods=['POST'])
+def export_anki(story_id):
+    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
+    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
+    if not story:
+        return jsonify({"error": "Story not found"}), 404
+        
+    scenes = story.get('stage5', {}).get('treatment_scenes', [])
+    if not scenes:
+        return jsonify({"error": "No treatment scenes found. Complete Stage 5 before exporting."}), 400
+        
+    try:
+        import genanki
+    except ImportError:
+        return jsonify({"error": "genanki is required. Run: pip install genanki"}), 500
+        
+    h = 0
+    for c in story_id:
+        h = (h * 31 + ord(c)) & 0xFFFFFFFF
+    
+    model_id = h
+    deck_id = h ^ 0x12345678
+    
+    my_model = genanki.Model(
+      model_id,
+      'LivingWriter Model',
+      fields=[
+        {'name': 'Front'},
+        {'name': 'Back'},
+      ],
+      templates=[
+        {
+          'name': 'Card 1',
+          'qfmt': '{{Front}}',
+          'afmt': '{{FrontSide}}<hr id="answer">{{Back}}',
+        },
+      ])
+      
+    my_deck = genanki.Deck(deck_id, f"LivingWriter: {story.get('title')}")
+    
+    for s in scenes:
+        front = f"{s.get('slug_line')} — What is the crux of this scene?"
+        back = s.get('crux', '')
+        my_deck.add_note(genanki.Note(model=my_model, fields=[front, back]))
+        
+    for d in story.get('stage5', {}).get('descriptionary', []):
+        front = f"Describe: {d.get('header', '')}"
+        back = d.get('body', '')
+        my_deck.add_note(genanki.Note(model=my_model, fields=[front, back]))
+        
+    filename = f"{story_id}_anki.apkg"
+    filepath = os.path.join(DATA_DIR, 'exports', filename)
+    genanki.Package(my_deck).write_to_file(filepath)
+    
+    story['stage6']['anki_deck_exported'] = True
+    story['updated_at'] = datetime.utcnow().isoformat() + "Z"
+    write_json(LIVING_WRITER_FILE, lw_data)
+    
+    return jsonify({"download_url": f"/api/lw/exports/{filename}"})
+
+@app.route('/api/lw/exports/<filename>')
+def download_lw_export(filename):
+    filepath = os.path.join(DATA_DIR, 'exports', filename)
+    if not os.path.exists(filepath):
+        return jsonify({"error": "File not found"}), 404
+    return send_from_directory(os.path.join(DATA_DIR, 'exports'), filename)
+
+@app.route('/api/lw/stories/<story_id>/stage7/export', methods=['POST'])
+def export_lw_story(story_id):
+    data = request.get_json() or {}
+    target = data.get('target')
+    fmt = data.get('format')
+    
+    if target not in ["final_draft","scrivener","novelwriter","ulysses","freewrite"]:
+        return jsonify({"error": "Invalid export target"}), 400
+    if fmt not in ["treatment","cruxes"]:
+        return jsonify({"error": "format must be treatment or cruxes"}), 400
+        
+    lw_data = read_json(LIVING_WRITER_FILE) or {"stories": []}
+    story = next((s for s in lw_data.get("stories", []) if s['id'] == story_id), None)
+    if not story:
+        return jsonify({"error": "Story not found"}), 404
+        
+    scenes = story.get('stage5', {}).get('treatment_scenes', [])
+    try:
+        scenes = sorted(scenes, key=lambda x: int(x.get('order', 0)))
+    except (TypeError, ValueError):
+        pass
+        
+    if fmt == "cruxes":
+        content = "\n\n".join([f"{s.get('slug_line', '')}\n{s.get('crux', '')}" for s in scenes])
+        filename = f"{story_id}_cruxes.txt"
+    else:
+        content = "\n\n".join([f"{s.get('slug_line', '')}\n{s.get('crux', '')}\n{s.get('scene_description', '')}" for s in scenes])
+        filename = f"{story_id}_treatment.txt"
+        
+    filepath = os.path.join(DATA_DIR, 'exports', filename)
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write(content)
+        
+    return jsonify({"download_url": f"/api/lw/exports/{filename}"})
+
+@app.route('/api/lw/leviathan/questions')
+def get_leviathan_questions():
+    return jsonify({"questions": LEVIATHAN_QUESTIONS})
 
 if __name__ == '__main__':
     import socket, webbrowser, threading
