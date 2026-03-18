@@ -5,3 +5,7 @@ __pycache__/
 *.env
 plugins/
 notes/
+.DS_Store
+publishing/
+server.log
+*.log
