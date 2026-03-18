@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Indaba</title>
+  <link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body>
+
+<!-- ── TOP BAR ─────────────────────────────────────────────────── -->
+<header id="topbar">
+  <div class="topbar-left">
+    <div class="logo">Indaba</div>
+    <nav class="topbar-nav" id="top-nav">
+      <button class="top-tab-btn active" data-tab="hub">HUB</button>
+      <button class="top-tab-btn" data-tab="todo">TO-DO</button>
+      <button class="top-tab-btn" data-tab="living-writer">LIVING WRITER</button>
+      <button class="top-tab-btn" data-tab="publishing-central">PUBLISHING CENTRAL</button>
+      <button class="top-tab-btn" data-tab="promotion-machine">PROMOTION MACHINE</button>
+      <button class="top-tab-btn" data-tab="settings">SETTINGS</button>
+    </nav>
+    <div id="topbar-date" class="topbar-date"></div>
+  </div>
+  <div class="topbar-right">
+    <div id="window-pill" class="window-pill"></div>
+    <div id="clock" class="clock"></div>
+    <button class="icon-btn" id="btn-theme"    title="Toggle light/dark mode">Light</button>
+    <button class="icon-btn" id="btn-notes"    title="Concept Notes">Notes</button>
+    <button class="icon-btn" id="btn-plugins"  title="Plugins">Plugins</button>
+    <button class="icon-btn" id="btn-help"     title="Help / Reference">?</button>
+  </div>
+</header>
+
+<!-- ── MAIN ────────────────────────────────────────────────────── -->
+<div id="main-content">
+  <!-- HUB -->
+  <div id="view-hub" class="top-view-container">
+    <div class="hub-panel">
+      <h2>Indaba Hub</h2>
+      <div class="hub-cards-grid" id="hub-cards-grid">
+        <!-- cards rendered by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- TO-DO -->
+  <div id="view-todo" class="top-view-container" style="display:none;">
+    <div class="todo-nav-bar">
+      <button class="tab-btn active" data-view="dashboard">Dashboard</button>
+      <button class="tab-btn" data-view="earnings">Earnings</button>
+    </div>
+    <div id="main">
+      <div id="feed">
+        <!-- Gap 1: Daily commitment declaration -->
+        <div id="commitment-block"></div>
+
+        <div id="new-project-row">
+          <button id="btn-new-project" class="btn-capture">
+            <span class="plus">+</span> Capture Incoming Work / New Project
+          </button>
+        </div>
+        <div id="priority-feed">
+          <!-- Rendered by JS -->
+        </div>
+      </div>
+
+      <aside id="sidebar">
+        <div id="posting-tracker-panel"><!-- Rendered by JS --></div>
+        <div id="inbox-panel"><!-- Rendered by JS --></div>
+        <div id="lead-measures-panel"><!-- Rendered by JS --></div>
+        <div id="pipeline-panel"><!-- Rendered by JS --></div>
+        <div id="quick-projects-panel"><!-- Rendered by JS --></div>
+      </aside>
+
+      <div id="earnings-container" class="view-container hidden">
+        <!-- Earnings dashboard will be rendered by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- LIVING WRITER -->
+  <div id="view-living-writer" class="top-view-container" style="display:none;">
+    <div class="coming-soon-panel">
+      <h2>Living Writer</h2>
+      <p>Coming soon.</p>
+    </div>
+  </div>
+
+  <!-- PUBLISHING CENTRAL -->
+  <div id="view-publishing-central" class="top-view-container" style="display:none;">
+    <div id="publishing-container" class="view-container">
+      <!-- Publishing dashboard will be rendered by JS -->
+    </div>
+  </div>
+
+  <div id="view-promotion-machine" class="top-view-container" style="display:none;">
+    <div class="promo-tab-bar">
+      <button class="promo-tab-btn active" data-promo-tab="contacts">Contacts</button>
+      <button class="promo-tab-btn" data-promo-tab="leads">Leads</button>
+      <button class="promo-tab-btn" data-promo-tab="message-maker">Message Maker</button>
+      <button class="promo-tab-btn" data-promo-tab="book-serializer">Book Serializer</button>
+      <button class="promo-tab-btn" data-promo-tab="wa-post-maker">WA Post Maker</button>
+      <button class="promo-tab-btn" data-promo-tab="sender">Sender</button>
+      <button class="promo-tab-btn" data-promo-tab="promo-settings">Settings</button>
+    </div>
+
+    <div id="promo-view-contacts" class="promo-view-container"></div>
+    <div id="promo-view-leads" class="promo-view-container" style="display:none"></div>
+    <div id="promo-view-message-maker" class="promo-view-container" style="display:none"></div>
+    <div id="promo-view-book-serializer" class="promo-view-container" style="display:none"></div>
+    <div id="promo-view-wa-post-maker" class="promo-view-container" style="display:none"></div>
+    <div id="promo-view-sender" class="promo-view-container" style="display:none"></div>
+    <div id="promo-view-promo-settings" class="promo-view-container" style="display:none"></div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div id="view-settings" class="top-view-container" style="display:none;">
+    <div id="settings-view-content">
+      <!-- Settings content will be moved here by JS -->
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL OVERLAY ───────────────────────────────────────────── -->
+<div id="modal-overlay" class="hidden">
+  <div id="modal-box">
+    <button class="modal-close" onclick="closeModal()">✕</button>
+    <div id="modal-content"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
