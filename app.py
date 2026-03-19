@@ -318,10 +318,11 @@ def read_json(filename):
 def write_json(filename, data):
     os.makedirs(DATA_DIR, exist_ok=True)
     path = os.path.join(DATA_DIR, filename)
-    tmp  = path + '.tmp'
+    abs_path = os.path.abspath(path)
+    tmp = abs_path + ".tmp"
     with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, default=str)
-    os.replace(tmp, path)
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, abs_path)
 
 def call_ai(provider_key, messages, max_tokens=1000):
     """Generic AI caller using OpenAI-compatible client."""

@@ -42,7 +42,12 @@ const state = {
   promoOverdueCount: 0,
   promoDispatchedCount: 0,
   promoInstruction: null,
-  currentMessageFilter: "all"
+  currentMessageFilter: "all",
+  lwStories: [],
+  lwCurrentStoryId: null,
+  lwCurrentStage: 1,
+  lwLeviathanQuestions: [],
+  lwAntinetNudgeDismissed: {}
 };
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -88,6 +93,8 @@ function switchTopTab(tabName) {
 
   if (tabName === 'hub') {
     loadHubSummary();
+  } else if (tabName === 'living-writer') {
+    loadLwDashboard();
   } else if (tabName === 'promotion-machine') {
     switchPromoTab('contacts');
   }
@@ -189,12 +196,1438 @@ function renderHubCards(data) {
   `).join('');
 }
 
+// ── Living Writer Dashboard ──────────────────────────────────────────────────
+
+async function loadLwDashboard() {
+  try {
+    const data = await GET('/api/lw/stories');
+    state.lwStories = data.stories || [];
+    const questions = await GET('/api/lw/leviathan/questions');
+    state.lwLeviathanQuestions = questions.questions || [];
+    renderLwPipeline();
+  } catch (e) {
+    console.error('LW Dashboard load failed:', e);
+    toast('Could not load stories', 'error');
+  }
+}
+
+function renderLwPipeline() {
+  // Reset focus
+  state.lwCurrentStoryId = null;
+  
+  const container = document.getElementById('view-living-writer');
+  if (!container) return;
+
+  const pipelineView = document.getElementById('lw-pipeline-view');
+  const storyView = document.getElementById('lw-story-view');
+  if (pipelineView) pipelineView.style.display = 'block';
+  if (storyView) storyView.style.display = 'none';
+
+  const list = document.getElementById('lw-pipeline-list');
+  if (!list) return;
+
+  if (state.lwStories.length === 0) {
+    list.innerHTML = `
+      <div class="coming-soon-panel">
+        <p>No stories in the pipeline yet. Click + New Story to begin.</p>
+      </div>`;
+  } else {
+    list.innerHTML = state.lwStories.map(story => {
+      const progress = ((story.current_stage - 1) / 6) * 100;
+      const stageLabels = [
+        "",
+        "Initial Concept Note",
+        "World & Story Outliner",
+        "Four Episode Grid",
+        "Chapter & Beat Cruxes",
+        "Treatment + Descriptionary",
+        "Internalization",
+        "Drafting in Flow"
+      ];
+      
+      const lastUpdated = new Date(story.updated_at).toLocaleDateString();
+      
+      return `
+        <div class="lw-pipeline-card" onclick="openLwStory('${story.id}')">
+          <div class="lw-card-top">
+            <div>
+              <div class="lw-card-title">${esc(story.title)}</div>
+              <div class="lw-card-stage">Stage ${story.current_stage}: ${stageLabels[story.current_stage]}</div>
+            </div>
+            ${story.draft_complete ? `<span class="lw-draft-complete-badge">✓ Draft Complete</span>` : ''}
+          </div>
+          <div class="lw-progress-track">
+            <div class="lw-progress-bar" style="width: ${progress}%"></div>
+          </div>
+          <div class="lw-card-footer">
+            <span>Last updated: ${lastUpdated}</span>
+            <div style="display:flex;gap:12px;">
+              <button class="btn-secondary" style="font-size:11px;padding:4px 8px;" 
+                onclick="event.stopPropagation(); openLwStory('${story.id}')">Open</button>
+              <button class="btn-danger" style="font-size:11px;padding:4px 8px;" 
+                onclick="event.stopPropagation(); confirmDeleteLwStory('${story.id}')">Delete</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+}
+
+function newLwStoryModal() {
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">+ New Story</div>
+    <div class="form-group">
+      <label class="form-label">Story Title *</label>
+      <input class="form-input" id="new-lw-title" placeholder="e.g. The Morning After" />
+      <div id="new-lw-error" style="color:var(--p1);font-size:12px;margin-top:4px;display:none;">Title is required</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="saveNewLwStory()">Save Story</button>
+    </div>`;
+  showModal();
+}
+
+async function saveNewLwStory() {
+  const titleInput = document.getElementById('new-lw-title');
+  const errorEl = document.getElementById('new-lw-error');
+  const title = titleInput.value.trim();
+  
+  if (!title) {
+    if (errorEl) errorEl.style.display = 'block';
+    return;
+  }
+  
+  try {
+    const res = await POST('/api/lw/stories', { title });
+    closeModal();
+    toast('Story created', 'success');
+    await loadLwDashboard();
+    if (res.id) openLwStory(res.id);
+  } catch (e) {
+    if (e.message.includes('409')) {
+      toast('Maximum stories in pipeline reached', 'error');
+    } else {
+      toast('Could not create story', 'error');
+    }
+  }
+}
+
+function confirmDeleteLwStory(storyId) {
+  if (confirm("Delete this story and all its content? This cannot be undone.")) {
+    DEL(`/api/lw/stories/${storyId}`).then(() => {
+      toast('Story deleted', 'success');
+      loadLwDashboard();
+    }).catch(() => {
+      toast('Could not delete story', 'error');
+    });
+  }
+}
+
+// ── Living Writer Story View ─────────────────────────────────────────────────
+
+async function openLwStory(storyId) {
+  try {
+    const story = await GET(`/api/lw/stories/${storyId}`);
+    state.lwCurrentStoryId = storyId;
+    state.lwCurrentStage = story.current_stage;
+    
+    document.getElementById('lw-pipeline-view').style.display = 'none';
+    document.getElementById('lw-story-view').style.display = 'block';
+    
+    renderLwStageSidebar(story);
+    renderLwStageContent(story);
+  } catch (e) {
+    console.error('Open LW story failed:', e);
+    toast('Could not open story', 'error');
+  }
+}
+
+function renderLwStageSidebar(story) {
+  const sidebar = document.getElementById('lw-stage-sidebar');
+  if (!sidebar) return;
+
+  const stageNames = [
+    "",
+    "Initial Concept Note",
+    "World & Story Outliner",
+    "Four Episode Grid",
+    "Chapter & Beat Cruxes",
+    "Treatment + Descriptionary",
+    "Internalization",
+    "Drafting in Flow"
+  ];
+
+  let stagesHtml = '';
+  for (let i = 1; i <= 7; i++) {
+    const isCompleted = i < story.current_stage;
+    const isActive = i === state.lwCurrentStage;
+    const isLocked = i > story.current_stage;
+    
+    stagesHtml += `
+      <div class="lw-stage-item ${isActive ? 'active' : ''} ${isCompleted ? 'completed' : ''} ${isLocked ? 'locked' : ''}" 
+           onclick="switchLwStage(${i})">
+        <span class="lw-stage-num">${i}</span>
+        <span class="lw-stage-name">${stageNames[i]}</span>
+        ${isCompleted ? '<span style="margin-left:auto">✓</span>' : ''}
+      </div>
+    `;
+  }
+
+  sidebar.innerHTML = `
+    <div class="lw-sidebar-header">
+      <button class="lw-back-btn" onclick="renderLwPipeline()">← All Stories</button>
+      <div class="lw-sidebar-story-title">${esc(story.title)}</div>
+    </div>
+    <div class="lw-stage-list">
+      ${stagesHtml}
+    </div>
+    <div class="lw-sidebar-footer">
+      ${story.current_stage < 7 ? `
+        <button class="btn-primary" style="width:100%" onclick="advanceLwStage('${story.id}', ${story.current_stage})">Mark Stage Complete</button>
+      ` : story.current_stage === 7 && !story.draft_complete ? `
+        <button class="lw-mark-complete-btn" onclick="completeLwStory('${story.id}')">Mark Draft Complete</button>
+      ` : story.draft_complete ? `
+        <div class="lw-draft-complete-badge" style="text-align:center; display:block">✓ Draft Complete</div>
+      ` : ''}
+    </div>
+  `;
+}
+
+async function switchLwStage(stageNumber) {
+  if (!state.lwCurrentStoryId) return;
+  
+  // Actually the spec says "All stages are clickable regardless of lock state."
+  // "Locked stages show content but with a note: Complete earlier stages to unlock this stage."
+  
+  state.lwCurrentStage = stageNumber;
+  try {
+    const story = await GET(`/api/lw/stories/${state.lwCurrentStoryId}`);
+    renderLwStageSidebar(story);
+    renderLwStageContent(story);
+  } catch (e) {
+    toast('Could not switch stage', 'error');
+  }
+}
+
+async function advanceLwStage(storyId, currentStage) {
+  try {
+    await POST(`/api/lw/stories/${storyId}/advance`);
+    toast(`Stage complete! Moving to Stage ${currentStage + 1}`, 'success');
+    openLwStory(storyId);
+  } catch (e) {
+    // res.error might be in the body
+    toast('Could not advance stage', 'error');
+  }
+}
+
+async function completeLwStory(storyId) {
+  if (confirm("Mark this story as draft complete? This will signal Indaba that the project is ready.")) {
+    try {
+      await POST(`/api/lw/stories/${storyId}/complete`);
+      toast('Draft complete! Indaba has been notified.', 'success');
+      openLwStory(storyId);
+    } catch (e) {
+      toast('Could not complete story', 'error');
+    }
+  }
+}
+
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
+
+// ── Living Writer Stages ─────────────────────────────────────────────────────
+
+function renderLwStageContent(story) {
+  const content = document.getElementById('lw-stage-content');
+  if (!content) return;
+
+  const currentStage = state.lwCurrentStage;
+  
+  // Locked check
+  if (currentStage > story.current_stage) {
+    content.innerHTML = `
+      <div class="coming-soon-panel">
+        <h2 style="color:var(--p2)">Stage Locked</h2>
+        <p>Complete earlier stages to unlock this stage.</p>
+        <p style="margin-top:20px; font-size:12px; font-style:normal; color:var(--muted)">
+          You can still see the layout, but you should finish Stage ${story.current_stage} first.
+        </p>
+      </div>`;
+    // We still render the actual content below it if we want to follow "show content but with a note"
+    // Let's prepend the note and continue.
+  } else {
+    content.innerHTML = '';
+  }
+
+  switch (currentStage) {
+    case 1: renderLwStage1(story); break;
+    case 2: renderLwStage2(story); break;
+    case 3: renderLwStage3(story); break;
+    case 4: renderLwStage4(story); break;
+    case 5: renderLwStage5(story); break;
+    case 6: renderLwStage6(story); break;
+    case 7: renderLwStage7(story); break;
+  }
+}
+
+function renderLwStage1(story) {
+  const content = document.getElementById('lw-stage-content');
+  
+  const stage1 = story.stage1 || { concept_note: "", devonthink_nudge_shown: false };
+  
+  content.innerHTML += `
+    <div class="lw-stage-heading">
+      <span>Stage 1 — Initial Concept Note</span>
+    </div>
+    
+    <div class="form-group">
+      <label class="form-label">Concept Note</label>
+      <textarea id="lw-concept-note" class="form-textarea" style="min-height: 400px;" 
+                placeholder="What is this story about? Write freely..."
+                onblur="saveLwStage1('${story.id}')"
+                onkeyup="updateLwWordCount('lw-concept-note', 'lw-stage1-wc')">${esc(stage1.concept_note || '')}</textarea>
+      <div id="lw-stage1-wc" class="lw-word-count">0 words</div>
+    </div>
+  `;
+  
+  updateLwWordCount('lw-concept-note', 'lw-stage1-wc');
+
+  // DEVONthink Nudge
+  if (!stage1.devonthink_nudge_shown) {
+    document.getElementById('modal-content').innerHTML = `
+      <div class="modal-title">Before you begin</div>
+      <p style="margin: 16px 0; line-height: 1.6;">
+        Do you have existing material on this concept in <strong>DEVONthink</strong>? 
+        Notes, research, prior drafts, clippings? 
+        Retrieve any relevant material before developing this story further.
+      </p>
+      <div class="modal-actions">
+        <button class="btn-primary" onclick="dismissLwNudge('${story.id}')">Got it, I've checked</button>
+      </div>
+    `;
+    showModal();
+  }
+}
+
+async function saveLwStage1(storyId) {
+  const note = document.getElementById('lw-concept-note').value;
+  try {
+    await PUT(`/api/lw/stories/${storyId}`, {
+      stage1: { concept_note: note }
+    });
+    // Silent save
+  } catch (e) {
+    console.error('Save Stage 1 failed');
+  }
+}
+
+async function dismissLwNudge(storyId) {
+  try {
+    await PUT(`/api/lw/stories/${storyId}`, {
+      stage1: { devonthink_nudge_shown: true }
+    });
+    closeModal();
+  } catch (e) {
+    closeModal();
+  }
+}
+
+function updateLwWordCount(textareaId, displayId) {
+  const text = document.getElementById(textareaId)?.value || '';
+  const count = text.trim() ? text.trim().split(/\s+/).length : 0;
+  const el = document.getElementById(displayId);
+  if (el) el.textContent = `${count} words`;
+}
+
+// ── Living Writer Stage 2: World & Story Outliner ────────────────────────────
+
+function renderLwStage2(story) {
+  const content = document.getElementById('lw-stage-content');
+  const stage2 = story.stage2 || {};
+  
+  content.innerHTML += `
+    <div class="lw-stage-heading">Stage 2 — World & Story Outliner</div>
+    
+    <div id="lw-s2-characters"></div>
+    <div id="lw-s2-thematic"></div>
+    <div id="lw-s2-catastrophe"></div>
+    <div id="lw-s2-fragments"></div>
+    <div id="lw-s2-rules"></div>
+    <div id="lw-s2-leviathan"></div>
+    <div id="lw-s2-genome"></div>
+  `;
+  
+  renderLwS2Characters(story);
+  renderLwS2Thematic(story);
+  renderLwS2Catastrophe(story);
+  renderLwS2Fragments(story);
+  renderLwS2Rules(story);
+  renderLwS2Leviathan(story);
+  renderLwS2Genome(story);
+}
+
+function renderLwS2Characters(story) {
+  const container = document.getElementById('lw-s2-characters');
+  const chars = story.stage2?.characters || [];
+  
+  container.innerHTML = `
+    <div class="lw-section-header">
+      <span>Characters (${chars.length}/6)</span>
+      <span class="lw-compulsory-badge">COMPULSORY</span>
+    </div>
+    <div class="lw-character-list">
+      ${chars.map(c => `
+        <div class="lw-character-card" id="char-${c.id}">
+          <div class="lw-character-card-header" onclick="toggleLwCharCard('${c.id}')">
+            <strong>${esc(c.character_in_one_line || 'Untitled Character').substring(0, 40)}${c.character_in_one_line?.length > 40 ? '...' : ''}</strong>
+            <button class="btn-danger" style="font-size:10px;padding:2px 6px;" onclick="event.stopPropagation(); deleteLwCharacter('${story.id}', '${c.id}')">×</button>
+          </div>
+          <div class="lw-character-card-body" style="display:none">
+            ${renderCharFields(story.id, c)}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    <button class="btn-secondary" style="margin-top:12px;" 
+            ${chars.length >= 6 ? 'disabled title="Maximum 6 characters reached"' : ''}
+            onclick="openLwAddCharacterModal('${story.id}')">+ Add Character</button>
+  `;
+}
+
+function toggleLwCharCard(id) {
+  const body = document.querySelector(`#char-${id} .lw-character-card-body`);
+  if (body) body.style.display = body.style.display === 'none' ? 'block' : 'none';
+}
+
+function renderCharFields(storyId, char) {
+  const fields = [
+    { key: 'character_in_one_line', label: 'Character in One Line', type: 'text', examples: ["A middle-aged accountant who has never once said what he actually thinks.", "A woman who has spent thirty years taking care of everyone except herself."] },
+    { key: 'wound', label: 'The Wound', type: 'textarea', examples: ["Abandoned by her mother at age seven with no explanation.", "Publicly humiliated at the one moment he tried to lead."] },
+    { key: 'lie', label: 'The Lie They\'re Living', type: 'textarea', examples: ["If I stay invisible, I stay safe.", "Love is a transaction. I give enough, I get enough back."] },
+    { key: 'crucible', label: 'The Crucible', type: 'text', examples: ["Duty vs Desire", "Survival vs Integrity"] },
+    { key: 'terrain', label: 'The Terrain', type: 'textarea', examples: ["Moves from suburban middle-management to the boardrooms of Johannesburg's mining elite.", "Crosses from rural Eastern Cape poverty into Cape Town's NGO world of well-meaning strangers."] },
+    { key: 'transformation', label: 'The Transformation', type: 'textarea', examples: ["Becomes capable of saying no to the person she loves most.", "Learns to act without needing to be certain first."] },
+    { key: 'leave_behind', label: 'What They Leave Behind', type: 'textarea', examples: ["The belief that his silence protects the people around him.", "Her mother's approval, which she has been chasing for thirty years."] }
+  ];
+
+  return fields.map(f => `
+    <div class="form-group">
+      <label class="form-label">${f.label}</label>
+      <button class="lw-example-toggle" onclick="toggleLwExample('ex-${char.id}-${f.key}')">Show example</button>
+      <div id="ex-${char.id}-${f.key}" class="lw-example-text" style="display:none">
+        ${f.examples.map(ex => `<div>• ${ex}</div>`).join('')}
+      </div>
+      ${f.type === 'text' 
+        ? `<input class="form-input" value="${esc(char[f.key] || '')}" onblur="saveLwCharacter('${storyId}', '${char.id}', '${f.key}', this.value)" />`
+        : `<textarea class="form-textarea" onblur="saveLwCharacter('${storyId}', '${char.id}', '${f.key}', this.value)">${esc(char[f.key] || '')}</textarea>`
+      }
+    </div>
+  `).join('');
+}
+
+function toggleLwExample(id) {
+  const el = document.getElementById(id);
+  const btn = el.previousElementSibling;
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    btn.textContent = 'Hide example';
+  } else {
+    el.style.display = 'none';
+    btn.textContent = 'Show example';
+  }
+}
+
+async function saveLwCharacter(storyId, charId, field, value) {
+  try {
+    const story = await GET(`/api/lw/stories/${storyId}`);
+    const chars = story.stage2.characters || [];
+    const char = chars.find(c => c.id === charId);
+    if (!char) return;
+    char[field] = value;
+    await PUT(`/api/lw/stories/${storyId}`, { stage2: { characters: chars } });
+  } catch (e) {
+    toast('Error saving character', 'error');
+  }
+}
+
+async function deleteLwCharacter(storyId, charId) {
+  if (!confirm('Remove this character?')) return;
+  try {
+    const story = await GET(`/api/lw/stories/${storyId}`);
+    const chars = (story.stage2.characters || []).filter(c => c.id !== charId);
+    await PUT(`/api/lw/stories/${storyId}`, { stage2: { characters: chars } });
+    openLwStory(storyId); // Full re-render
+  } catch (e) {
+    toast('Error deleting character', 'error');
+  }
+}
+
+function openLwAddCharacterModal(storyId) {
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">Add New Character</div>
+    <div style="max-height: 60vh; overflow-y: auto; padding-right: 10px;">
+      <div class="form-group">
+        <label class="form-label">Character in One Line *</label>
+        <input class="form-input" id="new-char-line" placeholder="e.g. A middle-aged accountant..." />
+      </div>
+      <div class="form-group">
+        <label class="form-label">The Wound</label>
+        <textarea class="form-textarea" id="new-char-wound" placeholder="The formative pain..."></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label">The Lie They're Living</label>
+        <textarea class="form-textarea" id="new-char-lie" placeholder="The false belief..."></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label">The Crucible</label>
+        <input class="form-input" id="new-char-crucible" placeholder="Personal conflict values..." />
+      </div>
+      <div class="form-group">
+        <label class="form-label">The Terrain</label>
+        <textarea class="form-textarea" id="new-char-terrain" placeholder="The social/emotional landscape..."></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label">The Transformation</label>
+        <textarea class="form-textarea" id="new-char-trans" placeholder="What they become..."></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label">What They Leave Behind</label>
+        <textarea class="form-textarea" id="new-char-leave" placeholder="The past they discard..."></textarea>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="saveNewLwCharacter('${storyId}')">Add Character</button>
+    </div>
+  `;
+  showModal();
+}
+
+async function saveNewLwCharacter(storyId) {
+  const line = document.getElementById('new-char-line').value.trim();
+  if (!line) { toast('Character description is required', 'error'); return; }
+  
+  const newChar = {
+    id: crypto.randomUUID(),
+    character_in_one_line: line,
+    wound: document.getElementById('new-char-wound').value,
+    lie: document.getElementById('new-char-lie').value,
+    crucible: document.getElementById('new-char-crucible').value,
+    terrain: document.getElementById('new-char-terrain').value,
+    transformation: document.getElementById('new-char-trans').value,
+    leave_behind: document.getElementById('new-char-leave').value
+  };
+  
+  try {
+    const story = await GET(`/api/lw/stories/${storyId}`);
+    const chars = story.stage2.characters || [];
+    chars.push(newChar);
+    await PUT(`/api/lw/stories/${storyId}`, { stage2: { characters: chars } });
+    closeModal();
+    toast('Character added', 'success');
+    openLwStory(storyId);
+  } catch (e) {
+    toast('Error adding character', 'error');
+  }
+}
+
+function renderLwS2Thematic(story) {
+  const container = document.getElementById('lw-s2-thematic');
+  const stage2 = story.stage2 || {};
+  
+  container.innerHTML = `
+    <div class="lw-section-header">
+      <span>Thematic Values in Conflict</span>
+      <span class="lw-optional-badge">AUTO-DERIVED</span>
+    </div>
+    
+    ${!state.lwAntinetNudgeDismissed[story.id] ? `
+      <div id="lw-antinet-nudge-${story.id}" class="lw-antinet-nudge">
+        <div>
+          <strong>ANTINET: DO NOT SINK</strong><br>
+          <span style="font-size:12px">Retrieve the Antinet files for this story's core values before continuing.</span>
+        </div>
+        <button class="lw-nudge-close" onclick="dismissLwAntinetNudge('${story.id}')">×</button>
+      </div>
+    ` : ''}
+
+    <div class="form-group">
+      <button class="btn-secondary" id="btn-derive-thematic" style="margin-bottom:12px;" 
+              onclick="deriveLwThematic('${story.id}')">Derive Thematic Values</button>
+      <textarea id="lw-s2-thematic-text" class="form-textarea" style="min-height:120px;" 
+                onblur="saveLwS2Field('${story.id}', 'thematic_values', this.value)">${esc(stage2.thematic_values || '')}</textarea>
+    </div>
+  `;
+}
+
+async function deriveLwThematic(storyId) {
+  const btn = document.getElementById('btn-derive-thematic');
+  btn.textContent = 'Deriving...';
+  btn.disabled = true;
+  
+  try {
+    const res = await POST(`/api/lw/stories/${storyId}/stage2/derive_thematic_values`);
+    document.getElementById('lw-s2-thematic-text').value = res.thematic_values;
+    toast('Thematic values derived', 'success');
+    // Save to server
+    await PUT(`/api/lw/stories/${storyId}`, { stage2: { thematic_values: res.thematic_values } });
+  } catch (e) {
+    if (e.message.includes('400')) toast('Add at least 2 characters first', 'error');
+    else toast('AI unavailable', 'error');
+  } finally {
+    btn.textContent = 'Derive Thematic Values';
+    btn.disabled = false;
+  }
+}
+
+function renderLwS2Catastrophe(story) {
+  const container = document.getElementById('lw-s2-catastrophe');
+  const cat = story.stage2?.historical_catastrophe;
+  const enabled = !!cat;
+  
+  container.innerHTML = `
+    <div class="lw-section-header">
+      <span>Historical Catastrophe</span>
+      <span class="lw-optional-badge">OPTIONAL</span>
+    </div>
+    <div class="form-group">
+      <label class="check-row">
+        <input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleLwCatastrophe('${story.id}', this.checked)" />
+        Enable Historical Catastrophe Module
+      </label>
+    </div>
+    ${enabled ? `
+      <div id="lw-catastrophe-fields">
+        <div class="form-group">
+          <label class="form-label">The Event (Max 2 sentences)</label>
+          <textarea class="form-textarea" onblur="saveLwCatField('${story.id}', 'event', this.value)">${esc(cat.event || '')}</textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">How Long Ago</label>
+          <input class="form-input" value="${esc(cat.how_long_ago || '')}" onblur="saveLwCatField('${story.id}', 'how_long_ago', this.value)" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">What It Destroyed</label>
+          <textarea class="form-textarea" onblur="saveLwCatField('${story.id}', 'what_it_destroyed', this.value)">${esc(cat.what_it_destroyed || '')}</textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">What Replaced It</label>
+          <textarea class="form-textarea" onblur="saveLwCatField('${story.id}', 'what_replaced_it', this.value)">${esc(cat.what_replaced_it || '')}</textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Who Remembers It Correctly</label>
+          <textarea class="form-textarea" onblur="saveLwCatField('${story.id}', 'who_remembers_correctly', this.value)">${esc(cat.who_remembers_correctly || '')}</textarea>
+        </div>
+      </div>
+    ` : '<p style="font-size:12px;color:var(--muted)">Recommended for historical fiction, fantasy, sci-fi, dystopia.</p>'}
+  `;
+}
+
+async function toggleLwCatastrophe(storyId, enabled) {
+  const cat = enabled ? { event: "", how_long_ago: "", what_it_destroyed: "", what_replaced_it: "", who_remembers_correctly: "" } : null;
+  try {
+    await PUT(`/api/lw/stories/${storyId}`, { stage2: { historical_catastrophe: cat } });
+    openLwStory(storyId);
+  } catch (e) { toast('Error updating catastrophe module', 'error'); }
+}
+
+function renderLwS2Fragments(story) {
+  const container = document.getElementById('lw-s2-fragments');
+  const fragments = story.stage2?.fragments || [];
+  
+  const occasions = [
+    { type: 'wants', label: '1. Something someone wants', required: true },
+    { type: 'warned', label: '2. Something someone is warned against', required: true },
+    { type: 'celebrated', label: '3. Something being celebrated', required: true },
+    { type: 'mourned', label: '4. Something being mourned or lost', required: true },
+    { type: 'overheard', label: '5. Something overheard between strangers', required: true },
+    { type: 'child', label: '6. Something a child says or asks', required: false },
+    { type: 'immovable', label: '7. Something that has been there so long nobody notices it', required: false }
+  ];
+
+  container.innerHTML = `
+    <div class="lw-section-header">
+      <span>Fragments</span>
+      <span class="lw-compulsory-badge">COMPULSORY</span>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:16px;">Write fast. No character names from main cast. Do not explain anything. Max 80 words each.</div>
+    <div class="lw-fragments-list">
+      ${occasions.map(occ => {
+        const frag = fragments.find(f => f.occasion_type === occ.type);
+        const exists = !!frag;
+        if (!occ.required && !exists) {
+          return `<button class="btn-secondary" style="margin-bottom:12px;margin-right:8px;" onclick="addLwFragment('${story.id}', '${occ.type}')">+ Add ${occ.label}</button>`;
+        }
+        return `
+          <div class="form-group lw-fragment-item">
+            <label class="form-label">${occ.label}</label>
+            <textarea class="form-textarea" id="frag-${occ.type}" 
+                      onblur="saveLwFragment('${story.id}', '${occ.type}', this.value)"
+                      onkeyup="updateLwFragWC('${occ.type}')">${esc(frag?.content || '')}</textarea>
+            <div id="frag-${occ.type}-wc" class="lw-word-count">0 words</div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+  
+  occasions.forEach(occ => updateLwFragWC(occ.type));
+}
+
+function updateLwFragWC(type) {
+  const el = document.getElementById(`frag-${type}`);
+  if (!el) return;
+  const count = el.value.trim() ? el.value.trim().split(/\s+/).length : 0;
+  const display = document.getElementById(`frag-${type}-wc`);
+  if (display) {
+    display.textContent = `${count} words`;
+    display.classList.toggle('warning', count > 80);
+  }
+}
+
+async function addLwFragment(storyId, type) {
+  try {
+    const story = await GET(`/api/lw/stories/${storyId}`);
+    const fragments = story.stage2.fragments || [];
+    fragments.push({ id: crypto.randomUUID(), occasion_type: type, content: "" });
+    await PUT(`/api/lw/stories/${storyId}`, { stage2: { fragments: fragments } });
+    openLwStory(storyId);
+  } catch (e) { toast('Error adding fragment', 'error'); }
+}
+
+async function saveLwFragment(storyId, type, content) {
+  try {
+    const story = await GET(`/api/lw/stories/${storyId}`);
+    const fragments = story.stage2.fragments || [];
+    let frag = fragments.find(f => f.occasion_type === type);
+    if (!frag) {
+      fragments.push({ id: crypto.randomUUID(), occasion_type: type, content });
+    } else {
+      frag.content = content;
+    }
+    await PUT(`/api/lw/stories/${storyId}`, { stage2: { fragments: fragments } });
+  } catch (e) {}
+}
+
+function renderLwS2Rules(story) {
+  const container = document.getElementById('lw-s2-rules');
+  const rules = story.stage2?.world_rules;
+  const enabled = !!rules;
+  
+  container.innerHTML = `
+    <div class="lw-section-header">
+      <span>The World's Rules</span>
+      <span class="lw-optional-badge">OPTIONAL</span>
+    </div>
+    <div class="form-group">
+      <label class="check-row">
+        <input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleLwRules('${story.id}', this.checked)" />
+        Enable World's Rules Module
+      </label>
+    </div>
+    ${enabled ? `
+      <div id="lw-rules-fields">
+        <div class="form-group">
+          <label class="form-label">What does everyone in this world want and almost nobody can have?</label>
+          <textarea class="form-textarea" onblur="saveLwRuleField('${story.id}', 'universal_desire', this.value)">${esc(rules.universal_desire || '')}</textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">What holds this world together — what is the source of order spoken or unspoken?</label>
+          <textarea class="form-textarea" onblur="saveLwRuleField('${story.id}', 'source_of_order', this.value)">${esc(rules.source_of_order || '')}</textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">What is the most dangerous thing a person in this world can do socially?</label>
+          <textarea class="form-textarea" onblur="saveLwRuleField('${story.id}', 'social_danger', this.value)">${esc(rules.social_danger || '')}</textarea>
+        </div>
+      </div>
+    ` : '<p style="font-size:12px;color:var(--muted)">Highly recommended for non-contemporary-realism.</p>'}
+  `;
+}
+
+async function toggleLwRules(storyId, enabled) {
+  const rules = enabled ? { universal_desire: "", source_of_order: "", social_danger: "" } : null;
+  try {
+    await PUT(`/api/lw/stories/${storyId}`, { stage2: { world_rules: rules } });
+    openLwStory(storyId);
+  } catch (e) { toast('Error updating rules module', 'error'); }
+}
+
+function renderLwS2Leviathan(story) {
+  const container = document.getElementById('lw-s2-leviathan');
+  const answers = story.stage2?.leviathan_answers || {};
+  const answered = Object.values(answers).filter(v => typeof v === 'string' && v.trim()).length;
+  
+  const questions = state.lwLeviathanQuestions || [];
+  const parts = [];
+  const partsMap = {};
+  questions.forEach(q => {
+    if (!partsMap[q.part_label]) {
+      partsMap[q.part_label] = [];
+      parts.push(q.part_label);
+    }
+    partsMap[q.part_label].push(q);
+  });
+
+  container.innerHTML = `
+    <div class="lw-section-header">
+      <span>The Leviathan — 52 Questions</span>
+      <span class="lw-compulsory-badge">${answered}/52 answered</span>
+    </div>
+    <div class="lw-leviathan-parts">
+      ${parts.map(p => `
+        <div class="lw-leviathan-part">
+          <div class="lw-leviathan-part-header" onclick="toggleLwLeviPart(this)">
+            <span>${esc(p)}</span>
+            <span style="font-size:12px;font-weight:normal;color:var(--muted)">
+              ${partsMap[p].filter(q => answers[q.id]?.trim()).length}/${partsMap[p].length}
+            </span>
+          </div>
+          <div class="lw-leviathan-part-body" style="display:none">
+            ${partsMap[p].map(q => renderLeviQuestion(story.id, q, answers[q.id])).join('')}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function toggleLwLeviPart(header) {
+  const body = header.nextElementSibling;
+  body.style.display = body.style.display === 'none' ? 'block' : 'none';
+}
+
+function renderLeviQuestion(storyId, q, answer) {
+  return `
+    <div class="lw-leviathan-question">
+      <div style="font-weight:bold;margin-bottom:8px;">${esc(q.text)}</div>
+      <textarea class="form-textarea" placeholder="Answer..." 
+                onblur="saveLwLeviAnswer('${storyId}', '${q.id}', this.value)">${esc(answer || '')}</textarea>
+      
+      <div class="lw-genome-context" style="display:none" id="ctx-${q.id}">
+        <strong>Story Genome Context:</strong>
+        <div class="lw-genome-ctx-content"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <button class="btn-secondary" style="font-size:10px" onclick="toggleLwLeviContext('${storyId}', '${q.id}', '${q.genome_refs?.join(',') || ''}')">Story Genome Context</button>
+        <button class="btn-secondary" style="font-size:10px" onclick="assistLwLevi('${storyId}', '${q.id}')">AI Assist</button>
+      </div>
+      <div id="assist-${q.id}"></div>
+    </div>
+  `;
+}
+
+function toggleLwLeviContext(storyId, qId, refs) {
+  const el = document.getElementById(`ctx-${qId}`);
+  if (el.style.display === 'block') {
+    el.style.display = 'none';
+    return;
+  }
+  
+  GET(`/api/lw/stories/${storyId}`).then(story => {
+    const ctxEl = el.querySelector('.lw-genome-ctx-content');
+    let html = '';
+    const refList = refs.split(',').filter(Boolean);
+    
+    refList.forEach(ref => {
+      if (ref === 'characters') {
+        html += '<div><strong>Characters:</strong><ul>' + (story.stage2.characters || []).map(c => `<li>${esc(c.character_in_one_line)}: ${esc(c.crucible)}</li>`).join('') + '</ul></div>';
+      } else if (ref === 'terrain') {
+        html += '<div><strong>Terrain:</strong><ul>' + (story.stage2.characters || []).map(c => `<li>${esc(c.character_in_one_line)}: ${esc(c.terrain)}</li>`).join('') + '</ul></div>';
+      } else if (ref === 'world_rules' && story.stage2.world_rules) {
+        html += '<div><strong>World Rules:</strong> ' + esc(story.stage2.world_rules.universal_desire) + '</div>';
+      } else if (ref === 'thematic_values') {
+        html += '<div><strong>Thematic Values:</strong> ' + esc(story.stage2.thematic_values) + '</div>';
+      } else if (ref === 'historical_catastrophe' && story.stage2.historical_catastrophe) {
+        html += '<div><strong>Historical Catastrophe:</strong> ' + esc(story.stage2.historical_catastrophe.event) + '</div>';
+      } else if (ref === 'fragments') {
+        html += '<div><strong>Fragments:</strong><ul>' + (story.stage2.fragments || []).slice(0,3).map(f => `<li>${esc(f.content)}</li>`).join('') + '</ul></div>';
+      }
+    });
+    
+    ctxEl.innerHTML = html || 'No context available for this question.';
+    el.style.display = 'block';
+  });
+}
+
+async function assistLwLevi(storyId, qId) {
+  const container = document.getElementById(`assist-${qId}`);
+  container.innerHTML = '<div style="font-size:11px;color:var(--muted);margin-top:8px;">Consulting the Leviathan...</div>';
+  
+  try {
+    const res = await POST(`/api/lw/stories/${storyId}/stage2/leviathan_assist`, { question_id: qId });
+    let html = `<div class="lw-ai-suggestion">${esc(res.suggestion)}</div>`;
+    if (res.contradictions && res.contradictions.length > 0) {
+      html += `<div class="lw-contradiction"><strong>⚠️ Contradictions:</strong><ul>${res.contradictions.map(c => `<li>${esc(c)}</li>`).join('')}</ul></div>`;
+    }
+    container.innerHTML = html;
+  } catch (e) {
+    container.innerHTML = '<div style="color:var(--p1);font-size:11px;margin-top:8px;">AI Assist unavailable.</div>';
+  }
+}
+
+async function saveLwLeviAnswer(storyId, qId, value) {
+  try {
+    await PUT(`/api/lw/stories/${storyId}`, {
+      stage2: { leviathan_answers: { [qId]: value } }
+    });
+  } catch (e) {}
+}
+
+function renderLwS2Genome(story) {
+  const container = document.getElementById('lw-s2-genome');
+  const genome = story.stage2?.story_genome || "";
+  
+  container.innerHTML = `
+    <div class="lw-section-header">
+      <span>Story Genome</span>
+    </div>
+    <div class="form-group">
+      <button class="btn-primary" onclick="compileLwGenome('${story.id}')" style="margin-bottom:12px;">Compile Story Genome</button>
+      <textarea id="lw-s2-genome-text" class="form-textarea" style="min-height:300px;" 
+                placeholder="The assembled DNA of your story..."
+                onblur="saveLwS2Field('${story.id}', 'story_genome', this.value)">${esc(genome)}</textarea>
+    </div>
+  `;
+}
+
+async function compileLwGenome(storyId) {
+  const story = await GET(`/api/lw/stories/${storyId}`);
+  const s2 = story.stage2 || {};
+  
+  let text = `STORY GENOME: ${story.title}\n\n`;
+  
+  text += `CHARACTERS:\n`;
+  (s2.characters || []).forEach(c => {
+    text += `- ${c.character_in_one_line}\n`;
+    text += `  WOUND: ${c.wound}\n`;
+    text += `  LIE: ${c.lie}\n`;
+    text += `  CRUCIBLE: ${c.crucible}\n`;
+    text += `  TERRAIN: ${c.terrain}\n`;
+    text += `  TRANSFORMATION: ${c.transformation}\n`;
+    text += `  LEAVE BEHIND: ${c.leave_behind}\n\n`;
+  });
+  
+  text += `THEMATIC VALUES: ${s2.thematic_values || 'None'}\n\n`;
+  
+  if (s2.historical_catastrophe) {
+    text += `HISTORICAL CATASTROPHE:\n`;
+    text += `EVENT: ${s2.historical_catastrophe.event}\n`;
+    text += `TIME: ${s2.historical_catastrophe.how_long_ago}\n`;
+    text += `DESTROYED: ${s2.historical_catastrophe.what_it_destroyed}\n\n`;
+  }
+  
+  text += `FRAGMENTS:\n`;
+  (s2.fragments || []).forEach(f => {
+    text += `[${f.occasion_type}] ${f.content}\n`;
+  });
+  
+  if (s2.world_rules) {
+    text += `\nWORLD RULES:\n`;
+    text += `DESIRE: ${s2.world_rules.universal_desire}\n`;
+    text += `ORDER: ${s2.world_rules.source_of_order}\n`;
+    text += `DANGER: ${s2.world_rules.social_danger}\n`;
+  }
+  
+  document.getElementById('lw-s2-genome-text').value = text;
+  await saveLwS2Field(storyId, 'story_genome', text);
+  toast('Genome compiled', 'success');
+}
+
+// Helpers for Stage 2 saves
+
+async function saveLwS2Field(storyId, field, value) {
+  try {
+    await PUT(`/api/lw/stories/${storyId}`, { stage2: { [field]: value } });
+  } catch (e) {}
+}
+
+async function saveLwCatField(storyId, field, value) {
+  try {
+    const story = await GET(`/api/lw/stories/${storyId}`);
+    const cat = story.stage2.historical_catastrophe || {};
+    cat[field] = value;
+    await PUT(`/api/lw/stories/${storyId}`, { stage2: { historical_catastrophe: cat } });
+  } catch (e) {}
+}
+
+async function saveLwRuleField(storyId, field, value) {
+  try {
+    const story = await GET(`/api/lw/stories/${storyId}`);
+    const rules = story.stage2.world_rules || {};
+    rules[field] = value;
+    await PUT(`/api/lw/stories/${storyId}`, { stage2: { world_rules: rules } });
+  } catch (e) {}
+}
+
+// ── Living Writer Stage 3: Four Episode Grid ─────────────────────────────────
+
+function renderLwStage3(story) {
+  const content = document.getElementById('lw-stage-content');
+  const stage3 = story.stage3 || {};
+  
+  content.innerHTML += `
+    <div class="lw-stage-heading">Stage 3 — Four Episode Grid</div>
+    
+    <div class="lw-section-header">
+      <span>Arc Brainstorms</span>
+      <span class="lw-compulsory-badge">COMPULSORY (at least 2)</span>
+    </div>
+    <div id="lw-s3-brainstorms">
+      ${(stage3.arc_brainstorms || []).map(b => `
+        <div class="lw-character-card" style="margin-bottom:16px">
+          <div class="lw-character-card-header" onclick="toggleLwCharCard('${b.id}')">
+            <strong>${esc(b.logline || 'Untitled Brainstorm').substring(0, 60)}...</strong>
+            <button class="btn-danger" style="font-size:10px;padding:2px 6px;" onclick="event.stopPropagation(); deleteLwBrainstorm('${story.id}', '${b.id}')">×</button>
+          </div>
+          <div class="lw-character-card-body" style="display:none">
+            <div class="form-group">
+              <label class="form-label">Scenario (Max 2 sentences)</label>
+              <textarea class="form-textarea" onblur="saveLwBrainstormField('${story.id}', '${b.id}', 'scenario', this.value)">${esc(b.scenario || '')}</textarea>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Arc Summary</label>
+              <textarea class="form-textarea" style="min-height:100px;" onblur="saveLwBrainstormField('${story.id}', '${b.id}', 'arc_summary', this.value)">${esc(b.arc_summary || '')}</textarea>
+            </div>
+            <div class="form-group">
+              <label class="form-label">The Conflict</label>
+              <textarea class="form-textarea" onblur="saveLwBrainstormField('${story.id}', '${b.id}', 'the_conflict', this.value)">${esc(b.the_conflict || '')}</textarea>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Logline</label>
+              <input class="form-input" value="${esc(b.logline || '')}" onblur="saveLwBrainstormField('${story.id}', '${b.id}', 'logline', this.value)" />
+            </div>
+            <button class="btn-secondary" onclick="generateLwLoglines('${story.id}', '${b.id}')">Regenerate Loglines</button>
+            <div id="logline-suggestions-${b.id}" class="lw-ai-suggestion" style="display:none"></div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    <button class="btn-primary" onclick="generateLwArcBrainstorm('${story.id}')">+ AI Brainstorm New Scenario</button>
+    <div id="lw-s3-brainstorm-status" style="font-size:11px;color:var(--muted);margin-top:8px;"></div>
+  `;
+}
+
+async function generateLwArcBrainstorm(storyId) {
+  const status = document.getElementById('lw-s3-brainstorm-status');
+  if (status) status.textContent = 'Generating brainstorm...';
+  try {
+    await POST(`/api/lw/stories/${storyId}/stage3/arc_brainstorm`);
+    toast('Brainstorm generated', 'success');
+    openLwStory(storyId);
+  } catch (e) {
+    if (e.message.includes('400')) toast('Complete World & Story Outliner first', 'error');
+    else toast('AI Brainstorm failed', 'error');
+  } finally {
+    if (status) status.textContent = '';
+  }
+}
+
+async function deleteLwBrainstorm(storyId, id) {
+  if (!confirm('Remove this brainstorm?')) return;
+  try {
+    const story = await GET(`/api/lw/stories/${storyId}`);
+    const brains = (story.stage3.arc_brainstorms || []).filter(b => b.id !== id);
+    await PUT(`/api/lw/stories/${storyId}`, { stage3: { arc_brainstorms: brains } });
+    openLwStory(storyId);
+  } catch (e) { toast('Error deleting brainstorm', 'error'); }
+}
+
+async function saveLwBrainstormField(storyId, bid, field, value) {
+  try {
+    const story = await GET(`/api/lw/stories/${storyId}`);
+    const brains = story.stage3.arc_brainstorms || [];
+    const b = brains.find(x => x.id === bid);
+    if (b) {
+      b[field] = value;
+      await PUT(`/api/lw/stories/${storyId}`, { stage3: { arc_brainstorms: brains } });
+    }
+  } catch (e) {}
+}
+
+async function generateLwLoglines(storyId, bid) {
+  const container = document.getElementById(`logline-suggestions-${bid}`);
+  if (container) {
+    container.style.display = 'block';
+    container.innerHTML = 'Thinking up loglines...';
+  }
+  try {
+    const res = await POST(`/api/lw/stories/${storyId}/stage3/generate_loglines`, { brainstorm_id: bid });
+    if (container) {
+      container.innerHTML = `
+        <strong>Suggestions:</strong>
+        <ul style="margin-top:8px;">
+          ${res.loglines.map(l => `
+            <li style="margin-bottom:8px; cursor:pointer;" onclick="applyLwLogline('${storyId}', '${bid}', this.innerText)">${esc(l)}</li>
+          `).join('')}
+        </ul>
+        <div style="font-size:10px;color:var(--muted)">Click a suggestion to apply it.</div>
+      `;
+    }
+  } catch (e) {
+    if (container) container.innerHTML = 'AI suggestions unavailable.';
+  }
+}
+
+async function applyLwLogline(storyId, bid, text) {
+  await saveLwBrainstormField(storyId, bid, 'logline', text);
+  openLwStory(storyId); // Refresh
+}
+
+// ── Living Writer Stage 4: Chapter & Beat Cruxes ─────────────────────────────
+
+function renderLwStage4(story) {
+  const content = document.getElementById('lw-stage-content');
+  const stage4 = story.stage4 || { linked_files: [] };
+  
+  content.innerHTML += `
+    <div class="lw-stage-heading">Stage 4 — Chapter & Beat Cruxes</div>
+    <p style="margin-bottom:24px;color:var(--muted)">Link your TreeSheets files for planning the structure.</p>
+    
+    <div class="lw-section-header">Linked TreeSheets Files</div>
+    <div id="lw-s4-files">
+      ${(stage4.linked_files || []).map(f => `
+        <div class="lw-pipeline-card" style="padding:16px; margin-bottom:12px; cursor:default;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <div style="font-weight:bold;">${esc(f.name)}</div>
+              <div style="font-size:11px;color:var(--muted2)">${esc(f.path)}</div>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button class="btn-secondary" onclick="openLwLinkedFile('${story.id}', '${f.id}')">Open</button>
+              <button class="btn-danger" style="font-size:10px" onclick="deleteLwLinkedFile('${story.id}', '${f.id}')">×</button>
+            </div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    <button class="btn-secondary" onclick="openLwAddFileModal('${story.id}')">+ Link TreeSheets File</button>
+  `;
+}
+
+function openLwAddFileModal(storyId) {
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">Link TreeSheets File</div>
+    <div class="form-group">
+      <label class="form-label">Display Name</label>
+      <input class="form-input" id="lw-file-name" placeholder="Chapter 1 Planning" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Absolute local path</label>
+      <input class="form-input" id="lw-file-path" placeholder="/Users/me/writing/ch1.trsc" />
+    </div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="saveLwLinkedFile('${storyId}')">Link File</button>
+    </div>
+  `;
+  showModal();
+}
+
+async function saveLwLinkedFile(storyId) {
+  const name = document.getElementById('lw-file-name').value;
+  const path = document.getElementById('lw-file-path').value;
+  if (!name || !path) return;
+  
+  try {
+    const story = await GET(`/api/lw/stories/${storyId}`);
+    const files = story.stage4.linked_files || [];
+    files.push({ id: crypto.randomUUID(), name, path });
+    await PUT(`/api/lw/stories/${storyId}`, { stage4: { linked_files: files } });
+    closeModal();
+    openLwStory(storyId);
+  } catch (e) {}
+}
+
+async function openLwLinkedFile(storyId, fileId) {
+  try {
+    await POST(`/api/lw/stories/${storyId}/stage4/open_file`, { file_id: fileId });
+    toast('File opened', 'success');
+  } catch (e) {
+    toast('Could not open file locally', 'error');
+  }
+}
+
+async function deleteLwLinkedFile(storyId, fileId) {
+  try {
+    const story = await GET(`/api/lw/stories/${storyId}`);
+    const files = (story.stage4.linked_files || []).filter(f => f.id !== fileId);
+    await PUT(`/api/lw/stories/${storyId}`, { stage4: { linked_files: files } });
+    openLwStory(storyId);
+  } catch (e) {}
+}
+
+// ── Living Writer Stage 5: Treatment + Descriptionary ───────────────────────
+
+function renderLwStage5(story) {
+  const content = document.getElementById('lw-stage-content');
+  const stage5 = story.stage5 || { treatment: [], descriptionary: [] };
+  
+  content.innerHTML += `
+    <div class="lw-stage-heading">Stage 5 — Treatment + Descriptionary</div>
+    
+    <div class="lw-section-header">Experimental Treatment</div>
+    <div id="lw-s5-treatment" class="lw-treatment-list">
+      ${(stage5.treatment || []).map((s, idx) => `
+        <div class="lw-treatment-scene" draggable="true" ondragstart="lwDragScene(event, ${idx})" ondragover="lwAllowDrop(event)" ondrop="lwDropScene(event, ${idx})">
+          <div class="lw-drag-handle">⠿</div>
+          <div class="lw-scene-content">
+            <textarea class="form-textarea" style="min-height:80px;border:none;background:transparent;padding:0;font-family:inherit;" 
+                      onblur="saveLwScene('${story.id}', ${idx}, this.value)"
+                      placeholder="Scene description...">${esc(s)}</textarea>
+            <div style="text-align:right">
+              <button class="btn-danger" style="font-size:10px;padding:2px 6px;" onclick="deleteLwScene('${story.id}', ${idx})">×</button>
+            </div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    <button class="btn-secondary" onclick="addLwScene('${story.id}')">+ Add Scene</button>
+    
+    <div class="lw-section-header">Descriptionary</div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Pre-write specific sensory details and descriptions.</p>
+    <div id="lw-s5-descriptionary">
+      ${(stage5.descriptionary || []).map(d => `
+        <div class="lw-descriptionary-entry">
+          <div class="lw-descriptionary-header" contenteditable="true" onblur="saveLwDescEntry('${story.id}', '${d.id}', 'label', this.innerText)">${esc(d.label || 'New Entry')}</div>
+          <textarea class="form-textarea" style="min-height:60px;" 
+                    onblur="saveLwDescEntry('${story.id}', '${d.id}', 'content', this.value)">${esc(d.content || '')}</textarea>
+          <div style="text-align:right;margin-top:4px;">
+            <button class="btn-danger" style="font-size:10px;padding:2px 6px;" onclick="deleteLwDescEntry('${story.id}', '${d.id}')">Remove</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    <button class="btn-secondary" style="margin-top:12px;" onclick="addLwDescEntry('${story.id}')">+ Add Entry</button>
+  `;
+}
+
+async function addLwScene(storyId) {
+  const story = await GET(`/api/lw/stories/${storyId}`);
+  const treatment = story.stage5.treatment || [];
+  treatment.push("");
+  await PUT(`/api/lw/stories/${storyId}`, { stage5: { treatment } });
+  openLwStory(storyId);
+}
+
+async function saveLwScene(storyId, idx, val) {
+  const story = await GET(`/api/lw/stories/${storyId}`);
+  const treatment = story.stage5.treatment || [];
+  treatment[idx] = val;
+  await PUT(`/api/lw/stories/${storyId}`, { stage5: { treatment } });
+}
+
+async function deleteLwScene(storyId, idx) {
+  const story = await GET(`/api/lw/stories/${storyId}`);
+  const treatment = story.stage5.treatment || [];
+  treatment.splice(idx, 1);
+  await PUT(`/api/lw/stories/${storyId}`, { stage5: { treatment } });
+  openLwStory(storyId);
+}
+
+function lwDragScene(ev, idx) { ev.dataTransfer.setData("text", idx); }
+function lwAllowDrop(ev) { ev.preventDefault(); }
+async function lwDropScene(ev, targetIdx) {
+  ev.preventDefault();
+  const sourceIdx = parseInt(ev.dataTransfer.getData("text"));
+  if (sourceIdx === targetIdx) return;
+  
+  const storyId = state.lwCurrentStoryId;
+  const story = await GET(`/api/lw/stories/${storyId}`);
+  const treatment = story.stage5.treatment || [];
+  const [removed] = treatment.splice(sourceIdx, 1);
+  treatment.splice(targetIdx, 0, removed);
+  
+  await PUT(`/api/lw/stories/${storyId}`, { stage5: { treatment } });
+  openLwStory(storyId);
+}
+
+async function addLwDescEntry(storyId) {
+  const story = await GET(`/api/lw/stories/${storyId}`);
+  const desc = story.stage5.descriptionary || [];
+  desc.push({ id: crypto.randomUUID(), label: "New Detail", content: "" });
+  await PUT(`/api/lw/stories/${storyId}`, { stage5: { descriptionary: desc } });
+  openLwStory(storyId);
+}
+
+async function saveLwDescEntry(storyId, id, field, val) {
+  const story = await GET(`/api/lw/stories/${storyId}`);
+  const desc = story.stage5.descriptionary || [];
+  const entry = desc.find(x => x.id === id);
+  if (entry) {
+    entry[field] = val;
+    await PUT(`/api/lw/stories/${storyId}`, { stage5: { descriptionary: desc } });
+  }
+}
+
+async function deleteLwDescEntry(storyId, id) {
+  const story = await GET(`/api/lw/stories/${storyId}`);
+  const desc = (story.stage5.descriptionary || []).filter(x => x.id !== id);
+  await PUT(`/api/lw/stories/${storyId}`, { stage5: { descriptionary: desc } });
+}
+
+// ── Living Writer Stage 6: Internalization ──────────────────────────────────
+
+function renderLwStage6(story) {
+  const content = document.getElementById('lw-stage-content');
+  const stage6 = story.stage6 || { narrative_summary: "" };
+  
+  content.innerHTML += `
+    <div class="lw-stage-heading">Stage 6 — Internalization</div>
+    
+    <div class="lw-section-header">Narrative Summary</div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Summarize the entire story in your own words, start to finish.</p>
+    <div class="form-group">
+      <textarea id="lw-narrative-summary" class="form-textarea" style="min-height:300px;" 
+                placeholder="The story begins when..."
+                onblur="saveLwS6Field('${story.id}', 'narrative_summary', this.value)"
+                onkeyup="updateLwWordCount('lw-narrative-summary', 'lw-stage6-wc')">${esc(stage6.narrative_summary || '')}</textarea>
+      <div id="lw-stage6-wc" class="lw-word-count">0 words</div>
+    </div>
+    
+    <div class="lw-section-header">Anki Deck</div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Memorize your story's DNA before drafting.</p>
+    <div class="form-group">
+      <button class="btn-primary" onclick="exportLwAnki('${story.id}')">Export Anki Deck (.txt)</button>
+    </div>
+  `;
+  
+  updateLwWordCount('lw-narrative-summary', 'lw-stage6-wc');
+}
+
+async function saveLwS6Field(storyId, field, val) {
+  try {
+    await PUT(`/api/lw/stories/${storyId}`, { stage6: { [field]: val } });
+  } catch (e) {}
+}
+
+async function exportLwAnki(storyId) {
+  try {
+    await POST(`/api/lw/stories/${storyId}/stage6/export_anki`);
+    toast('Anki deck exported to /exports', 'success');
+  } catch (e) {
+    toast('Export failed', 'error');
+  }
+}
+
+// ── Living Writer Stage 7: Drafting in Flow ─────────────────────────────────
+
+function renderLwStage7(story) {
+  const content = document.getElementById('lw-stage-content');
+  const stage7 = story.stage7 || { session_notes: [] };
+  
+  content.innerHTML += `
+    <div class="lw-stage-heading">Stage 7 — Drafting in Flow</div>
+    
+    <div class="lw-export-targets">
+      <button class="lw-export-target-btn active" onclick="setLwExportTarget('Word')">Word / Scrivener</button>
+      <button class="lw-export-target-btn" onclick="setLwExportTarget('Ulysses')">Ulysses / Markdown</button>
+      <button class="lw-export-target-btn" onclick="setLwExportTarget('Notion')">Notion</button>
+    </div>
+    <button class="btn-primary" style="margin-bottom:32px;" onclick="exportLwDraftSupport('${story.id}')">Export Draft Support Pack</button>
+    
+    <div class="lw-section-header">Reconstruction Session Notes</div>
+    <div id="lw-s7-sessions">
+      ${(stage7.session_notes || []).map(s => `
+        <div class="lw-reconstruction-session">
+          <div class="lw-session-timestamp">${new Date(s.timestamp).toLocaleString()}</div>
+          <div style="white-space:pre-wrap;">${esc(s.notes)}</div>
+        </div>
+      `).join('')}
+    </div>
+    <button class="btn-secondary" onclick="openLwAddSessionModal('${story.id}')">+ Log Reconstruction Session</button>
+    
+    <div class="lw-section-header">Chapter & Beat Cruxes</div>
+    <div id="lw-s7-cruxes">
+      <button class="btn-secondary" style="margin-bottom:12px;" onclick="loadLwCruxes('${story.id}')">Review Planned Cruxes</button>
+      <div id="lw-crux-display" class="lw-crux-list" style="display:none"></div>
+    </div>
+    
+    ${story.draft_complete ? '' : `
+      <div class="lw-draft-complete-box">
+        <h3 style="color:var(--p3);margin-bottom:8px;">Ready to Finish?</h3>
+        <p style="font-size:13px;">If you have completed the first draft of this story, mark it as complete below.</p>
+        <button class="lw-mark-complete-btn" onclick="completeLwStory('${story.id}')">MARCH TO VICTORY: MARK DRAFT COMPLETE</button>
+      </div>
+    `}
+  `;
+}
+
+let lwExportTarget = 'Word';
+function setLwExportTarget(target) {
+  lwExportTarget = target;
+  document.querySelectorAll('.lw-export-target-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.innerText.includes(target));
+  });
+}
+
+async function exportLwDraftSupport(storyId) {
+  try {
+    await POST(`/api/lw/stories/${storyId}/stage7/export`, { target: lwExportTarget });
+    toast(`Support Pack exported for ${lwExportTarget}`, 'success');
+  } catch (e) {
+    toast('Export failed', 'error');
+  }
+}
+
+function openLwAddSessionModal(storyId) {
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">Log Reconstruction Session</div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">What did you learn or change during this drafting session?</p>
+    <div class="form-group">
+      <textarea id="lw-session-notes" class="form-textarea" style="min-height:200px;" placeholder="Today I realized the protagonist needs..."></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="saveLwSession('${storyId}')">Save Session</button>
+    </div>
+  `;
+  showModal();
+}
+
+async function saveLwSession(storyId) {
+  const notes = document.getElementById('lw-session-notes').value.trim();
+  if (!notes) return;
+  
+  try {
+    const story = await GET(`/api/lw/stories/${storyId}`);
+    const sessions = story.stage7.session_notes || [];
+    sessions.unshift({ timestamp: new Date().toISOString(), notes });
+    await PUT(`/api/lw/stories/${storyId}`, { stage7: { session_notes: sessions } });
+    closeModal();
+    openLwStory(storyId);
+  } catch (e) {}
+}
+
+async function loadLwCruxes(storyId) {
+  const display = document.getElementById('lw-crux-display');
+  if (display) {
+    display.style.display = 'block';
+    display.innerHTML = 'Fetching cruxes from TreeSheets...';
+  }
+  
+  try {
+    const res = await GET(`/api/lw/stories/${storyId}/cruxes`);
+    if (display) {
+      if (res.cruxes.length === 0) {
+        display.innerHTML = '<p style="color:var(--muted)">No cruxes found in linked files.</p>';
+      } else {
+        display.innerHTML = res.cruxes.map(c => `
+          <div class="lw-crux-list-item">
+            <span class="lw-list-slug">[${esc(c.slug)}]</span> ${esc(c.text)}
+          </div>
+        `).join('');
+      }
+    }
+  } catch (e) {
+    if (display) display.innerHTML = '<p style="color:var(--p1)">Could not fetch cruxes. Ensure TreeSheets files are linked and formatted correctly.</p>';
+  }
+}
 
 async function loadDashboard() {
   try {
     const d = await GET('/api/dashboard');
-    state.projects        = d.projects;
     state.settings        = d.settings;
     state.contentPipeline = d.content_pipeline;
     state.leadMeasures    = d.lead_measures;
@@ -274,7 +1707,12 @@ function renderAll() {
   } else if (state.currentTopTab === 'todo') {
     renderTodoView();
   } else if (state.currentTopTab === 'living-writer') {
-    // Coming soon
+    if (state.lwCurrentStoryId) {
+      // Re-open current story if we were inside one
+      openLwStory(state.lwCurrentStoryId); 
+    } else {
+      renderLwPipeline();
+    }
   } else if (state.currentTopTab === 'publishing-central') {
     renderPublishingDashboard();
   } else if (state.currentTopTab === 'promotion-machine') {

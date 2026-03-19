@@ -81,9 +81,19 @@
 
   <!-- LIVING WRITER -->
   <div id="view-living-writer" class="top-view-container" style="display:none;">
-    <div class="coming-soon-panel">
-      <h2>Living Writer</h2>
-      <p>Coming soon.</p>
+    <div id="lw-pipeline-view">
+      <div class="lw-header">
+        <h2>Living Writer</h2>
+        <button id="lw-new-story-btn" class="btn-primary" onclick="newLwStoryModal()">+ New Story</button>
+      </div>
+      <div id="lw-pipeline-list"></div>
+    </div>
+
+    <div id="lw-story-view" style="display:none">
+      <div class="lw-story-layout">
+        <div class="lw-stage-sidebar" id="lw-stage-sidebar"></div>
+        <div class="lw-stage-content" id="lw-stage-content"></div>
+      </div>
     </div>
   </div>
 
