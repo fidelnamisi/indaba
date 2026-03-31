@@ -223,25 +223,584 @@ function updateClock() {
     if (timeEl) timeEl.textContent = timeStr;
 }
 
-// ── Pipeline & Works stub loaders (Phase 3 implementation) ───────────────────
+// ── Pipeline Overview (Phase 3) ───────────────────────────────────────────────
+
+// contentWorkflow state for Pipeline screen
+const pipelineState = {
+  filter:        'All',   // 'All' | 'Book' | 'Podcast' | 'Campaign' | 'Event'
+  activeStage:   'producing',
+  overviewData:  null,    // cached API response
+};
+
+// work_type → filter label mapping
+const WT_FILTER_MAP = {
+  'Book':                 'Book',
+  'Podcast':              'Podcast',
+  'Fundraising Campaign': 'Campaign',
+  'Retreat (Event)':      'Event',
+};
+const FILTER_WT_MAP = {
+  'Book':     'Book',
+  'Podcast':  'Podcast',
+  'Campaign': 'Fundraising Campaign',
+  'Event':    'Retreat (Event)',
+};
+
+// Work-type colour helpers
+function wtBadgeClass(workType) {
+  const m = { 'Book': 'book', 'Podcast': 'podcast', 'Fundraising Campaign': 'campaign', 'Retreat (Event)': 'event' };
+  return 'wt-badge wt-badge-' + (m[workType] || 'book');
+}
+function wtBarClass(workType) {
+  const m = { 'Book': 'wt-book', 'Podcast': 'wt-podcast', 'Fundraising Campaign': 'wt-campaign', 'Retreat (Event)': 'wt-event' };
+  return m[workType] || 'wt-book';
+}
+function wtLabel(workType) {
+  return WT_FILTER_MAP[workType] || workType;
+}
 
 async function loadPipeline() {
   const container = document.getElementById('pipeline-container');
   if (!container) return;
-  container.innerHTML = '<div class="stub-placeholder">Pipeline view — coming in Phase 3</div>';
+  try {
+    pipelineState.overviewData = await GET('/api/pipeline/overview');
+    renderPipelineOverview(container);
+  } catch (e) {
+    container.innerHTML = `<div class="stub-placeholder">Failed to load pipeline: ${e.message}</div>`;
+  }
 }
+
+function renderPipelineOverview(container) {
+  const { counts, modules } = pipelineState.overviewData;
+  const stages = [
+    { key: 'producing',  label: 'Producing',  num: 1 },
+    { key: 'publishing', label: 'Publishing', num: 2 },
+    { key: 'promoting',  label: 'Promoting',  num: 3 },
+  ];
+  const filters = ['All', 'Book', 'Podcast', 'Campaign', 'Event'];
+
+  // Filter bar
+  const filterHtml = filters.map(f => `
+    <button class="pipeline-filter-btn${f === pipelineState.filter ? ' active' : ''}"
+            onclick="setPipelineFilter('${f}')">${f}</button>
+  `).join('');
+
+  // Stage cards
+  const cardsHtml = stages.map(s => {
+    const c = counts[s.key] || { total: 0, breakdown: {} };
+    const total = c.total;
+    const breakdown = c.breakdown;
+    const WORK_TYPES = ['Book', 'Podcast', 'Fundraising Campaign', 'Retreat (Event)'];
+
+    // Breakdown text
+    const parts = WORK_TYPES
+      .filter(wt => (breakdown[wt] || 0) > 0)
+      .map(wt => `${breakdown[wt]} ${wtLabel(wt).toLowerCase()}`);
+    const breakdownText = parts.length ? parts.join(' · ') : '—';
+
+    // Proportional colour bar
+    const barSegments = total > 0
+      ? WORK_TYPES.filter(wt => (breakdown[wt] || 0) > 0).map(wt => {
+          const pct = ((breakdown[wt] / total) * 100).toFixed(1);
+          return `<div class="pipeline-stage-bar-segment ${wtBarClass(wt)}" style="width:${pct}%"></div>`;
+        }).join('')
+      : '';
+
+    const isActive = s.key === pipelineState.activeStage;
+    return `
+      <div class="pipeline-stage-card${isActive ? ' active' : ''}"
+           onclick="setPipelineStage('${s.key}')">
+        <div class="pipeline-stage-card-title">Stage ${s.num}: ${s.label}</div>
+        <div class="pipeline-stage-card-count">${total}</div>
+        <div class="pipeline-stage-card-breakdown">${breakdownText}</div>
+        <div class="pipeline-stage-card-bar">${barSegments}</div>
+      </div>`;
+  }).join('');
+
+  // Drill-down list
+  const drillHtml = renderPipelineDrilldown(modules);
+
+  container.innerHTML = `
+    <div style="max-width:1100px; margin:0 auto;">
+      <div class="pipeline-filter-bar">${filterHtml}</div>
+      <div class="pipeline-stage-cards">${cardsHtml}</div>
+      <div id="pipeline-drilldown">${drillHtml}</div>
+    </div>`;
+}
+
+function renderPipelineDrilldown(allModules) {
+  const stage  = pipelineState.activeStage;
+  const filter = pipelineState.filter;
+
+  let modules = allModules.filter(m => m.workflow_stage === stage);
+  if (filter !== 'All') {
+    const targetWt = FILTER_WT_MAP[filter];
+    if (targetWt) modules = modules.filter(m => m.work_type === targetWt);
+  }
+
+  const stageLabel = { producing: 'Producing', publishing: 'Publishing', promoting: 'Promoting' }[stage];
+
+  if (!modules.length) {
+    return `<div class="pipeline-drilldown-header">Modules — ${stageLabel}</div>
+            <div class="pipeline-drilldown-empty">No modules in ${stageLabel}${filter !== 'All' ? ` (${filter})` : ''}.</div>`;
+  }
+
+  const rows = modules.map(m => `
+    <div class="pipeline-module-row">
+      <span class="${wtBadgeClass(m.work_type)}">${wtLabel(m.work_type)}</span>
+      <span class="pipeline-module-title">${m.title}</span>
+      <span class="pipeline-module-work">${m.work_name}</span>
+      <button class="pipeline-open-btn" onclick="openModuleDetail('${m.id}')">Open</button>
+    </div>`).join('');
+
+  return `<div class="pipeline-drilldown-header">Modules — ${stageLabel} (${modules.length})</div>${rows}`;
+}
+
+function setPipelineFilter(filter) {
+  pipelineState.filter = filter;
+  if (!pipelineState.overviewData) return;
+  // Re-render just filter bar + drilldown (cards don't change)
+  const container = document.getElementById('pipeline-container');
+  if (container) renderPipelineOverview(container);
+}
+
+function setPipelineStage(stage) {
+  pipelineState.activeStage = stage;
+  if (!pipelineState.overviewData) return;
+  const container = document.getElementById('pipeline-container');
+  if (container) renderPipelineOverview(container);
+}
+
+// ── Works Screen (Phase 3) ────────────────────────────────────────────────────
 
 async function loadWorks() {
   const container = document.getElementById('works-container');
   if (!container) return;
-  container.innerHTML = '<div class="stub-placeholder">Works view — coming in Phase 3</div>';
+  try {
+    const data = await GET('/api/pipeline/overview');
+    renderWorksScreen(container, data.modules);
+  } catch (e) {
+    container.innerHTML = `<div class="stub-placeholder">Failed to load works: ${e.message}</div>`;
+  }
 }
 
-// ── Settings panel (gear icon) — opens promo settings ────────────────────────
+function renderWorksScreen(container, modules) {
+  const WORK_TYPES = ['Book', 'Podcast', 'Fundraising Campaign', 'Retreat (Event)'];
 
-async function openSettingsPanel() {
+  const sectionsHtml = WORK_TYPES.map(wt => {
+    const wtModules = modules.filter(m => m.work_type === wt);
+    if (!wtModules.length) return '';
+
+    // Group by work_name
+    const byWork = {};
+    wtModules.forEach(m => {
+      const key = m.work_name || 'Unknown';
+      if (!byWork[key]) byWork[key] = [];
+      byWork[key].push(m);
+    });
+
+    const cardsHtml = wtModules.map(m => {
+      const stageClass = 'stage-' + (m.workflow_stage || 'producing');
+      const stageLabel = { producing: 'Producing', publishing: 'Publishing', promoting: 'Promoting' }[m.workflow_stage] || m.workflow_stage;
+      return `
+        <div class="works-card" onclick="openModuleDetail('${m.id}')">
+          <div class="works-card-header">
+            <div>
+              <div class="works-card-title">${m.title}</div>
+              <div class="works-card-work">${m.work_name}</div>
+            </div>
+            <div class="works-card-stage ${stageClass}">${stageLabel}</div>
+          </div>
+        </div>`;
+    }).join('');
+
+    const sectionTitle = wt === 'Fundraising Campaign' ? 'Campaign' : wt === 'Retreat (Event)' ? 'Event' : wt;
+    return `
+      <div class="works-section">
+        <div class="works-section-header">
+          <span class="${wtBadgeClass(wt)}">${sectionTitle}</span>
+          <span class="works-section-title">${wt}</span>
+          <span class="works-section-count">${wtModules.length}</span>
+        </div>
+        <div class="works-grid">${cardsHtml}</div>
+      </div>`;
+  }).join('');
+
+  container.innerHTML = `<div style="max-width:1100px; margin:0 auto;">${sectionsHtml}</div>`;
+}
+
+// ── Module Detail View (Phase 4) ──────────────────────────────────────────────
+
+// contentWorkflow state for module detail
+const moduleDetailState = {
+  module:       null,
+  activeStage:  'producing',
+  originMode:   'pipeline',  // which mode opened this module
+};
+
+async function openModuleDetail(moduleId) {
+  // Remember which mode we came from
+  moduleDetailState.originMode = pipelineState.overviewData ? state.currentMode : 'pipeline';
+
+  try {
+    const data = await GET('/api/content-pipeline');
+    const module = data.find(e => e.id === moduleId);
+    if (!module) { toast('Module not found', 'error'); return; }
+    moduleDetailState.module = module;
+    moduleDetailState.activeStage = module.workflow_stage || 'producing';
+
+    // Render in the active mode container
+    const containerId = state.currentMode === 'works' ? 'works-container' : 'pipeline-container';
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    renderModuleDetail(container);
+  } catch (e) {
+    toast('Failed to load module: ' + e.message, 'error');
+  }
+}
+
+function renderModuleDetail(container) {
+  const m     = moduleDetailState.module;
+  const stage = moduleDetailState.activeStage;
+
+  const stageCards = [
+    { key: 'producing',  num: 1, label: 'Producing'  },
+    { key: 'publishing', num: 2, label: 'Publishing' },
+    { key: 'promoting',  num: 3, label: 'Promoting'  },
+  ];
+
+  // Compute progress for each stage card
+  function stageProgress(stageKey) {
+    if (stageKey === 'producing') {
+      const ps = m.producing_status || {};
+      const ea = ps.essential_asset === 'done' ? 1 : 0;
+      const sa = Object.values(ps.supporting_assets || {});
+      const saDone = sa.filter(v => v === 'done').length;
+      const total  = 1 + sa.length;
+      const done   = ea + saDone;
+      return { done, total, pct: total > 0 ? Math.round((done / total) * 100) : 0, label: `${done} of ${total} assets done` };
+    }
+    if (stageKey === 'publishing') {
+      const pub = m.publishing_status || {};
+      const platforms = Object.values(pub);
+      const done = platforms.filter(v => v === 'published' || v === 'done').length;
+      return { done, total: platforms.length, pct: platforms.length > 0 ? Math.round((done / platforms.length) * 100) : 0, label: `${done} of ${platforms.length} platforms` };
+    }
+    if (stageKey === 'promoting') {
+      const pr = m.promoting_status || {};
+      const actions = Object.values(pr);
+      const done = actions.filter(v => v === 'sent').length;
+      return { done, total: actions.length, pct: actions.length > 0 ? Math.round((done / actions.length) * 100) : 0, label: `${done} of ${actions.length} actions done` };
+    }
+    return { done: 0, total: 0, pct: 0, label: '' };
+  }
+
+  const stageBarHtml = stageCards.map(s => {
+    const prog = stageProgress(s.key);
+    return `
+      <div class="module-stage-card${s.key === stage ? ' active' : ''}"
+           onclick="switchModuleStage('${s.key}')">
+        <div class="module-stage-card-num">Stage ${s.num}</div>
+        <div class="module-stage-card-name">${s.label}</div>
+        <div class="module-stage-card-progress">
+          <div class="module-stage-card-progress-fill" style="width:${prog.pct}%"></div>
+        </div>
+        <div class="module-stage-card-stat">${prog.label}</div>
+      </div>`;
+  }).join('');
+
+  // Detail panel content
+  const panelHtml = renderModuleDetailPanel(m, stage);
+
+  const workType   = m.work_type || 'Book';
+  const workName   = m.book || '';
+  const stageLabel = { producing: 'Producing', publishing: 'Publishing', promoting: 'Promoting' }[m.workflow_stage] || m.workflow_stage;
+  const backLabel  = moduleDetailState.originMode === 'works' ? 'Works' : 'Pipeline';
+  const backFn     = moduleDetailState.originMode === 'works' ? 'loadWorks' : 'loadPipeline';
+
+  container.innerHTML = `
+    <div class="module-detail-view">
+      <button class="module-back-btn" onclick="${backFn}()">← ${backLabel}</button>
+      <div class="module-detail-breadcrumb">
+        <span onclick="${backFn}()">${workName}</span> › ${m.chapter}
+      </div>
+      <div class="module-detail-title">${m.chapter}</div>
+      <div class="module-detail-meta">
+        <span class="${wtBadgeClass(workType)}" style="margin-right:8px">${wtLabel(workType)}</span>
+        ${workName} · ${stageLabel}
+      </div>
+      <div class="module-stage-bar">${stageBarHtml}</div>
+      <div id="module-detail-panel" class="module-detail-panel">${panelHtml}</div>
+    </div>`;
+}
+
+function renderModuleDetailPanel(m, stage) {
+  if (stage === 'producing') return renderProducingPanel(m);
+  if (stage === 'publishing') return renderPublishingPanel(m);
+  if (stage === 'promoting')  return renderPromotingPanel(m);
+  return '';
+}
+
+function renderProducingPanel(m) {
+  const ps   = m.producing_status || {};
+  const eaDone = ps.essential_asset === 'done';
+  const sa   = ps.supporting_assets || {};
+
+  // Essential asset label by work type
+  const essentialLabel = {
+    'Book':                 'Chapter Prose',
+    'Podcast':              'Audio Recording',
+    'Fundraising Campaign': 'Campaign Narrative',
+    'Retreat (Event)':      'Event Offer Write-up',
+  }[m.work_type] || 'Essential Asset';
+
+  const eaRow = `
+    <div class="module-asset-row">
+      <div class="module-asset-dot ${eaDone ? 'dot-done' : 'dot-missing'}"></div>
+      <span class="module-asset-name">${essentialLabel}</span>
+      <button class="module-asset-action" onclick="viewModuleAsset('${m.id}', 'essential')">${eaDone ? 'View' : 'Add'}</button>
+    </div>`;
+
+  const saRows = Object.entries(sa).map(([key, val]) => {
+    const done    = val === 'done';
+    const label   = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    const dotClass = done ? 'dot-done' : 'dot-optional';
+    return `
+      <div class="module-asset-row">
+        <div class="module-asset-dot ${dotClass}"></div>
+        <span class="module-asset-name">${label}</span>
+        <button class="module-asset-action" onclick="viewModuleAsset('${m.id}', '${key}')">${done ? 'View' : 'Generate'}</button>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="module-detail-panel-title">Stage 1: Producing</div>
+    <div class="module-asset-section-title">Essential Asset</div>
+    ${eaRow}
+    <div class="module-asset-section-title">Supporting Assets</div>
+    ${saRows || '<div style="color:var(--muted);font-size:13px;padding:8px 0;">No supporting assets defined.</div>'}
+    <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <button class="module-asset-action" onclick="moveModuleToStage('${m.id}', 'publishing')" style="border-color:var(--accent)">→ Move to Publishing</button>
+    </div>`;
+}
+
+function renderPublishingPanel(m) {
+  const pub = m.publishing_status || {};
+
+  // Platform display labels
+  const PLATFORM_LABELS = {
+    vip_group: 'VIP Group', patreon: 'Patreon', website: 'Website',
+    wa_channel: 'WA Channel', spotify: 'Spotify', apple_podcasts: 'Apple Podcasts',
+    gofundme: 'GoFundMe', social: 'Social Pages',
+    landing_page: 'Landing Page', eventbrite: 'Eventbrite',
+  };
+
+  const rows = Object.entries(pub).map(([platform, status]) => {
+    const label      = PLATFORM_LABELS[platform] || platform;
+    const isPublished = status === 'published' || status === 'done';
+    const statusLabel = isPublished ? 'Published' : (status === 'in_progress' ? 'In Progress' : 'Not Started');
+    return `
+      <div class="module-platform-row">
+        <span class="module-platform-name">${label}</span>
+        <span class="module-platform-status${isPublished ? ' published' : ''}">${statusLabel}</span>
+        ${!isPublished ? `<button class="module-platform-mark-btn" onclick="markPlatformPublished('${m.id}', '${platform}')">Mark Published</button>` : ''}
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="module-detail-panel-title">Stage 2: Publishing</div>
+    <div class="module-asset-section-title">Platforms</div>
+    ${rows || '<div style="color:var(--muted);font-size:13px;padding:8px 0;">No platforms configured.</div>'}
+    <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <button class="module-asset-action" onclick="moveModuleToStage('${m.id}', 'producing')" style="color:var(--muted)">← Back to Producing</button>
+      <button class="module-asset-action" onclick="moveModuleToStage('${m.id}', 'promoting')" style="border-color:var(--accent)">→ Move to Promoting</button>
+    </div>`;
+}
+
+function renderPromotingPanel(m) {
+  const pr = m.promoting_status || {};
+
+  const ACTION_LABELS = {
+    wa_broadcast:    'WhatsApp Broadcast',
+    email_excerpt:   'Email Excerpt',
+    serializer_post: 'Serializer Post',
+  };
+
+  const broadcastRows = Object.entries(pr).map(([key, val]) => {
+    const label  = ACTION_LABELS[key] || key.replace(/_/g, ' ');
+    const isSent = val === 'sent';
+    return `
+      <div class="module-broadcast-row">
+        <span class="module-broadcast-name">${label}</span>
+        <span class="module-broadcast-status${isSent ? ' sent' : ''}">${isSent ? 'Sent' : 'Not Sent'}</span>
+        ${!isSent ? `<button class="module-broadcast-action" onclick="queueBroadcastAction('${m.id}', '${key}')">Queue</button>` : ''}
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="module-detail-panel-title">Stage 3: Promoting</div>
+    <div class="module-asset-section-title">Broadcast Actions</div>
+    ${broadcastRows}
+    <div class="module-asset-section-title">CRM</div>
+    <div class="module-asset-row">
+      <div class="module-asset-dot dot-optional"></div>
+      <span class="module-asset-name">Contacts &amp; Leads for this module</span>
+      <button class="module-asset-action" onclick="switchMode('promote').then(()=>switchPromoTab('contacts'))">View CRM</button>
+    </div>
+    <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <button class="module-asset-action" onclick="moveModuleToStage('${m.id}', 'publishing')" style="color:var(--muted)">← Back to Publishing</button>
+    </div>`;
+}
+
+function switchModuleStage(stage) {
+  moduleDetailState.activeStage = stage;
+  const panel = document.getElementById('module-detail-panel');
+  if (panel && moduleDetailState.module) {
+    panel.innerHTML = renderModuleDetailPanel(moduleDetailState.module, stage);
+    // Update active card border
+    document.querySelectorAll('.module-stage-card').forEach(card => {
+      card.classList.toggle('active', card.getAttribute('onclick').includes(`'${stage}'`));
+    });
+  }
+}
+
+async function moveModuleToStage(moduleId, newStage) {
+  try {
+    await PUT(`/api/content-pipeline/${moduleId}/workflow-stage`, { stage: newStage });
+    // Refresh pipeline cache
+    pipelineState.overviewData = null;
+    toast(`Moved to ${newStage}`, 'success');
+    // Re-open the module from fresh data
+    await openModuleDetail(moduleId);
+  } catch (e) {
+    toast('Failed to move stage: ' + e.message, 'error');
+  }
+}
+
+async function markPlatformPublished(moduleId, platform) {
+  try {
+    await PUT(`/api/content-pipeline/${moduleId}/publishing-status`, { [platform]: 'published' });
+    toast('Marked as published', 'success');
+    await openModuleDetail(moduleId);
+  } catch (e) {
+    toast('Failed: ' + e.message, 'error');
+  }
+}
+
+async function queueBroadcastAction(moduleId, actionKey) {
+  // Navigate to promote / broadcast-posts for now
   await switchMode('promote');
-  await switchPromoTab('promo-settings');
+  await switchPromoTab('broadcast-posts');
+  toast('Navigated to Broadcast Posts — queue your post there.', 'info');
+}
+
+function viewModuleAsset(moduleId, assetKey) {
+  // Navigate to the publishing screen for this chapter
+  toast('Asset view — open the chapter in the publishing screen.', 'info');
+}
+
+// ── Settings Modal (Phase 5) ──────────────────────────────────────────────────
+
+function openSettingsPanel() {
+  const modal = document.getElementById('settings-modal');
+  if (modal) {
+    modal.classList.remove('hidden');
+    loadSettingsModal();
+  }
+}
+
+function closeSettingsModal() {
+  const modal = document.getElementById('settings-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+let _settingsActiveTab = 'branding';
+
+function switchSettingsTab(tab) {
+  _settingsActiveTab = tab;
+  document.querySelectorAll('.settings-tab-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.settingsTab === tab);
+  });
+  document.querySelectorAll('.settings-tab-pane').forEach(p => {
+    p.classList.toggle('active', p.id === `settings-pane-${tab}`);
+  });
+}
+
+async function loadSettingsModal() {
+  const body = document.getElementById('settings-modal-body');
+  if (!body) return;
+  try {
+    const [promoSettings, appSettings] = await Promise.all([
+      GET('/api/promo/settings'),
+      GET('/api/settings'),
+    ]);
+    renderSettingsModal(body, promoSettings, appSettings);
+    switchSettingsTab(_settingsActiveTab);
+  } catch (e) {
+    body.innerHTML = `<div style="color:var(--muted);padding:16px;">Failed to load settings: ${e.message}</div>`;
+  }
+}
+
+function renderSettingsModal(body, promo, app) {
+  const ws = promo.whatsapp_sender || {};
+  const ai = promo.ai_providers || {};
+
+  body.innerHTML = `
+    <div id="settings-pane-branding" class="settings-tab-pane">
+      <div class="settings-section-title">WhatsApp Channel Branding</div>
+      <table class="settings-kv-table">
+        <tr><td>Channel Name</td><td><input class="form-input" id="s-wa-channel-name" value="${escHtml(ws.channel_name || '')}"/></td></tr>
+        <tr><td>Author Name</td><td><input class="form-input" id="s-wa-author-name" value="${escHtml(ws.author_name || '')}"/></td></tr>
+        <tr><td>CTA URL</td><td><input class="form-input" id="s-wa-cta-url" value="${escHtml(ws.cta_url || '')}"/></td></tr>
+        <tr><td>CTA Label</td><td><input class="form-input" id="s-wa-cta-label" value="${escHtml(ws.cta_label || '')}"/></td></tr>
+      </table>
+    </div>
+    <div id="settings-pane-ai" class="settings-tab-pane">
+      <div class="settings-section-title">AI Providers</div>
+      <table class="settings-kv-table">
+        <tr><td>Proverb Generator</td><td><input class="form-input" id="s-ai-proverb" value="${escHtml((ai.proverb_generator || {}).model || '')}"/></td></tr>
+        <tr><td>Message Maker</td><td><input class="form-input" id="s-ai-message" value="${escHtml((ai.message_maker || {}).model || '')}"/></td></tr>
+        <tr><td>Work Serializer</td><td><input class="form-input" id="s-ai-serializer" value="${escHtml((ai.work_serializer || {}).model || '')}"/></td></tr>
+        <tr><td>Broadcast Post</td><td><input class="form-input" id="s-ai-broadcast" value="${escHtml((ai.broadcast_post || {}).model || '')}"/></td></tr>
+      </table>
+    </div>
+    <div id="settings-pane-schedule" class="settings-tab-pane">
+      <div class="settings-section-title">Delivery Schedule</div>
+      <table class="settings-kv-table">
+        <tr><td>Delivery Hour (24h)</td><td><input class="form-input" type="number" id="s-delivery-hour" value="${escHtml(String(promo.delivery_hour ?? 8))}"/></td></tr>
+        <tr><td>Posting Days</td><td><input class="form-input" id="s-posting-days" value="${escHtml((promo.posting_days || []).join(', '))}"/></td></tr>
+      </table>
+    </div>`;
+}
+
+async function saveSettingsModal() {
+  try {
+    // Read branding fields
+    const patchPromo = {
+      whatsapp_sender: {
+        channel_name: document.getElementById('s-wa-channel-name')?.value || '',
+        author_name:  document.getElementById('s-wa-author-name')?.value  || '',
+        cta_url:      document.getElementById('s-wa-cta-url')?.value      || '',
+        cta_label:    document.getElementById('s-wa-cta-label')?.value    || '',
+      }
+    };
+    // Delivery schedule
+    const delivHour  = parseInt(document.getElementById('s-delivery-hour')?.value || '8');
+    const postDays   = (document.getElementById('s-posting-days')?.value || '')
+                         .split(',').map(s => s.trim()).filter(Boolean);
+    patchPromo.delivery_hour = delivHour;
+    patchPromo.posting_days  = postDays;
+
+    await PUT('/api/promo/settings', patchPromo);
+    toast('Settings saved', 'success');
+    closeSettingsModal();
+  } catch (e) {
+    toast('Save failed: ' + e.message, 'error');
+  }
+}
+
+function escHtml(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 async function loadHubSummary() {
@@ -4368,7 +4927,7 @@ function renderCommandCenter() {
                         <span class="cc-module-title">${esc(mod.module_title)}</span>
                         <span class="cc-module-status ${mod.status}">${mod.status}</span>
                       </div>
-                      <button class="btn-text" onclick="openModuleDetail('${mod.module_id}')" style="color:var(--accent); font-size:12px; cursor:pointer; background:none; border:none; padding:4px 8px;">Edit Module</button>
+                      <button class="btn-text" onclick="openSerializerModuleEdit('${mod.module_id}')" style="color:var(--accent); font-size:12px; cursor:pointer; background:none; border:none; padding:4px 8px;">Edit Module</button>
                     </div>
                     <div class="cc-module-assets" id="cc-module-assets-${mod.module_id}" style="display:none;">
 
@@ -4401,7 +4960,7 @@ function renderCommandCenter() {
   container.innerHTML = html;
 }
 
-async function openModuleDetail(moduleId) {
+async function openSerializerModuleEdit(moduleId) {
   try {
     const res = await fetch(`/api/modules/${moduleId}`);
     if (!res.ok) { toast('Module not found', 'error'); return; }
@@ -4448,8 +5007,8 @@ async function openModuleDetail(moduleId) {
   } catch (e) { console.error(e); toast('Error loading module', 'error'); }
 }
 
-// Backwards-compat alias
-async function openChapterDetail(chapterId) { return openModuleDetail(chapterId); }
+// Backwards-compat alias (serializer module edit)
+async function openChapterDetail(chapterId) { return openSerializerModuleEdit(chapterId); }
 
 async function saveModule(moduleId, contentAssetId) {
   const title  = document.getElementById('edit-module-title').value;

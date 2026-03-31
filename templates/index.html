@@ -79,6 +79,27 @@
 
 </div>
 
+<!-- ── SETTINGS MODAL ───────────────────────────────────────────── -->
+<div id="settings-modal" class="hidden">
+  <div id="settings-modal-box">
+    <div id="settings-modal-header">
+      <h2>⚙ SETTINGS</h2>
+      <button id="settings-modal-close" onclick="closeSettingsModal()">✕</button>
+    </div>
+    <div id="settings-modal-tabs">
+      <button class="settings-tab-btn active" data-settings-tab="branding"  onclick="switchSettingsTab('branding')">Branding</button>
+      <button class="settings-tab-btn"         data-settings-tab="ai"       onclick="switchSettingsTab('ai')">AI Providers</button>
+      <button class="settings-tab-btn"         data-settings-tab="schedule" onclick="switchSettingsTab('schedule')">Schedule</button>
+    </div>
+    <div id="settings-modal-body">
+      <!-- Loaded dynamically by loadSettingsModal() -->
+    </div>
+    <div id="settings-modal-footer">
+      <button class="settings-save-btn" onclick="saveSettingsModal()">Save Settings</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── MODAL OVERLAY ───────────────────────────────────────────── -->
 <div id="modal-overlay" class="hidden">
   <div id="modal-box">
