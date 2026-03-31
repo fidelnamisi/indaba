@@ -170,19 +170,37 @@ def api_pipeline_overview():
 
 @bp.route('/')
 def home():
-    return redirect(url_for('core.mode_pipeline'))
+    return redirect(url_for('core.mode_producing'))
 
 
+@bp.route('/producing')
+def mode_producing():
+    return render_template('index.html')
+
+
+# Legacy redirect — keep /pipeline working if bookmarked
 @bp.route('/pipeline')
-def mode_pipeline():
+def mode_pipeline_legacy():
+    return redirect(url_for('core.mode_producing'))
+
+
+@bp.route('/publishing')
+def mode_publishing():
     return render_template('index.html')
 
 
+# Legacy redirect
 @bp.route('/works')
-def mode_works():
+def mode_works_legacy():
+    return redirect(url_for('core.mode_publishing'))
+
+
+@bp.route('/promoting')
+def mode_promoting():
     return render_template('index.html')
 
 
+# Legacy redirect
 @bp.route('/promote')
-def mode_promote():
-    return render_template('index.html')
+def mode_promote_legacy():
+    return redirect(url_for('core.mode_promoting'))

@@ -122,6 +122,218 @@ def update_publishing_status(entry_id):
     return jsonify({'error': 'Not found'}), 404
 
 
+# ── Catalog Works (contentSchema — domain-model Works, not serializer Works) ──
+
+import re as _re
+
+@bp.route('/api/catalog-works', methods=['GET'])
+def list_catalog_works():
+    """Return all Works from catalog_works.json with their module counts."""
+    catalog  = read_json('catalog_works.json') or {'works': []}
+    pipeline = read_json('content_pipeline.json') or []
+
+    # Build module count per work code
+    count_by_code = {}
+    for e in pipeline:
+        code = e.get('book', '')
+        count_by_code[code] = count_by_code.get(code, 0) + 1
+
+    works = []
+    for w in catalog.get('works', []):
+        entry = dict(w)
+        entry['module_count'] = count_by_code.get(w['id'], 0)
+        # Include the modules themselves for the hierarchical view
+        entry['modules'] = [
+            {
+                'id':             e['id'],
+                'title':          e.get('chapter', ''),
+                'chapter_number': e.get('chapter_number', 0),
+                'workflow_stage': e.get('workflow_stage', 'producing'),
+                'website_status': e.get('website_status', 'not_started'),
+                'website_publish_info': e.get('website_publish_info'),
+                'has_prose':      bool((e.get('assets') or {}).get('prose', '').strip()),
+            }
+            for e in pipeline if e.get('book') == w['id']
+        ]
+        # Sort by chapter_number
+        entry['modules'].sort(key=lambda m: m.get('chapter_number', 0))
+        works.append(entry)
+
+    return jsonify({'works': works})
+
+
+@bp.route('/api/catalog-works', methods=['POST'])
+def create_catalog_work():
+    """
+    Create a new Work in the catalog.
+    For Book works: also registers the series in data/series_config.json.
+    Body: { title, work_type, author, series_code, url_slug, genre,
+            patreon_url, website_url, chapters_text (optional bulk import) }
+    """
+    data      = request.get_json() or {}
+    title     = data.get('title', '').strip()
+    work_type = data.get('work_type', 'Book').strip()
+
+    if not title:
+        return jsonify({'error': 'title is required'}), 400
+
+    now      = datetime.utcnow().isoformat() + 'Z'
+    catalog  = read_json('catalog_works.json') or {'works': []}
+
+    if work_type == 'Book':
+        series_code = data.get('series_code', '').strip().upper()
+        url_slug    = data.get('url_slug', '').strip().lower()
+        if not series_code:
+            return jsonify({'error': 'series_code is required for Book works'}), 400
+        if not url_slug:
+            return jsonify({'error': 'url_slug is required for Book works'}), 400
+        # Ensure unique code
+        existing_ids = {w['id'] for w in catalog.get('works', [])}
+        if series_code in existing_ids:
+            return jsonify({'error': f'Series code {series_code} already exists'}), 409
+
+        work_id = series_code
+
+        # Register in series_config.json so the publisher can find it
+        series_cfg = read_json('series_config.json') or {}
+        abbrev     = series_code.lower()
+        series_cfg[series_code] = {
+            'name':       title,
+            'slug':       url_slug,
+            'abbrev':     abbrev,
+            'genre':      data.get('genre', 'Fiction'),
+            'series_url': f'/series/{url_slug}.html',
+            'img_prefix': abbrev,
+        }
+        write_json('series_config.json', series_cfg)
+    else:
+        # Non-Book: generate a code from title
+        code_base = _re.sub(r'[^A-Z0-9]', '_', title.upper())[:20].strip('_')
+        work_id   = code_base
+        series_code = None
+        url_slug    = None
+
+    new_work = {
+        'id':          work_id,
+        'code':        work_id,
+        'title':       title,
+        'work_type':   work_type,
+        'author':      data.get('author', ''),
+        'genre':       data.get('genre', ''),
+        'url_slug':    url_slug or '',
+        'patreon_url': data.get('patreon_url', ''),
+        'website_url': data.get('website_url', ''),
+        'created_at':  now,
+    }
+    catalog['works'].append(new_work)
+    write_json('catalog_works.json', catalog)
+
+    # Bulk import chapters if provided
+    chapters_text = data.get('chapters_text', '').strip()
+    imported = 0
+    if chapters_text and work_type == 'Book':
+        imported = _bulk_import_chapters(work_id, chapters_text)
+
+    return jsonify({'work': new_work, 'chapters_imported': imported}), 201
+
+
+def _bulk_import_chapters(work_code, text):
+    """
+    Parse text split by ## headings into pipeline entries.
+    Format:
+        ## Chapter Title
+        Chapter prose...
+
+        ## Next Chapter Title
+        Next prose...
+    Returns count of chapters imported.
+    """
+    pipeline = read_json('content_pipeline.json') or []
+    now      = datetime.utcnow().isoformat() + 'Z'
+
+    # Split on lines starting with ##
+    raw_chapters = _re.split(r'\n(?=##\s)', text.strip())
+    imported = 0
+    chapter_number_start = max(
+        (e.get('chapter_number', 0) for e in pipeline if e.get('book') == work_code),
+        default=0
+    ) + 1
+
+    for i, chunk in enumerate(raw_chapters):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        lines = chunk.split('\n', 1)
+        if not lines[0].startswith('##'):
+            continue
+        chapter_title = lines[0].lstrip('#').strip()
+        prose         = lines[1].strip() if len(lines) > 1 else ''
+        if not chapter_title:
+            continue
+
+        chapter_num = chapter_number_start + i
+        entry_id    = f'{work_code.lower()}-ch{chapter_num}'
+
+        entry = {
+            'id':             entry_id,
+            'work_type':      'Book',
+            'book':           work_code,
+            'chapter':        chapter_title,
+            'chapter_number': chapter_num,
+            'vip_group_status':   'not_started',
+            'patreon_status':     'not_started',
+            'website_status':     'not_started',
+            'wa_channel_status':  'not_started',
+            'workflow_stage':     'producing' if not prose else 'publishing',
+            'producing_status': {
+                'essential_asset': 'done' if prose else 'missing',
+                'supporting_assets': {
+                    'blurb':        'missing',
+                    'tagline':      'missing',
+                    'image_prompt': 'missing',
+                    'header_image': 'missing',
+                    'audio':        'missing',
+                }
+            },
+            'publishing_status': {
+                'vip_group':  'not_started',
+                'patreon':    'not_started',
+                'website':    'not_started',
+                'wa_channel': 'not_started',
+            },
+            'promoting_status': {
+                'wa_broadcast':    'not_sent',
+                'email_excerpt':   'not_sent',
+                'serializer_post': 'not_sent',
+            },
+            'assets': {
+                'synopsis':           '',
+                'blurb':              '',
+                'tagline':            '',
+                'image_prompt':       '',
+                'prose':              prose,
+                'author_note':        '',
+                'header_image_path':  None,
+                'audio': {
+                    'local_path': None, 's3_url': None, 'audio_id': None,
+                    'title': '', 'duration': '', 'min_tier': 1, 'uploaded_at': None,
+                }
+            },
+            'notes':              '',
+            'revision':           1 if prose else 0,
+            'vip_group_revision': 0,
+            'patreon_revision':   0,
+            'website_revision':   0,
+            'wa_channel_revision':0,
+        }
+        pipeline.append(entry)
+        imported += 1
+
+    if imported:
+        write_json('content_pipeline.json', pipeline)
+    return imported
+
+
 # ── Notes ─────────────────────────────────────────────────────────────────────
 
 @bp.route('/api/notes', methods=['GET'])

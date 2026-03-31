@@ -272,6 +272,12 @@ def migrate():
     # 21. Content pipeline: add sample modules for non-Book work types (Phase 2)
     _migrate_sample_works()
 
+    # 22. Initialize catalog_works.json from SERIES_CONFIG + sample works
+    _migrate_catalog_works()
+
+    # 23. Initialize series_config.json (user-added series, starts empty)
+    _migrate_series_config()
+
 
 def _migrate_books_to_works():
     """One-time: copy promo_books.json data into works.json with renamed fields."""
@@ -719,6 +725,104 @@ def _migrate_sample_works():
         pipeline.extend(samples)
         write_json('content_pipeline.json', pipeline)
         print(f'[Migrate] Added {len(samples)} sample module(s) for new work types')
+
+
+def _migrate_catalog_works():
+    """
+    Phase 3 (Part 2): Initialize data/catalog_works.json.
+    Populates from the hardcoded SERIES_CONFIG for existing Books,
+    plus the three sample non-Book works created in Phase 2.
+    Idempotent — only adds entries that are not already present.
+    """
+    catalog_path = os.path.join(DATA_DIR, 'catalog_works.json')
+    catalog      = read_json('catalog_works.json') or {'works': []}
+    existing_ids = {w['id'] for w in catalog.get('works', [])}
+    now          = datetime.now().isoformat() + 'Z'
+    changed      = False
+
+    # Seed from hardcoded SERIES_CONFIG (Books)
+    hardcoded = {
+        'ROTRQ': {'title': 'Rise of the Rain Queen',    'slug': 'rise-of-the-rain-queen',    'genre': 'Epic Fantasy'},
+        'OAO':   {'title': 'Outlaws and Outcasts',      'slug': 'outlaws-and-outcasts',       'genre': 'Epic Fantasy'},
+        'MOSAS': {'title': 'Man of Stone and Shadow',   'slug': 'man-of-stone-and-shadow',    'genre': 'Sci-Fi / Fantasy'},
+    }
+    for code, meta in hardcoded.items():
+        if code not in existing_ids:
+            catalog['works'].append({
+                'id':          code,
+                'code':        code,
+                'title':       meta['title'],
+                'work_type':   'Book',
+                'author':      'Fidel Namisi',
+                'genre':       meta['genre'],
+                'url_slug':    meta['slug'],
+                'patreon_url': '',
+                'website_url': '',
+                'created_at':  now,
+            })
+            existing_ids.add(code)
+            changed = True
+
+    # Seed sample non-Book works
+    samples = [
+        {
+            'id':         'INDABA_PODCAST',
+            'code':       'INDABA_PODCAST',
+            'title':      'Indaba Podcast',
+            'work_type':  'Podcast',
+            'author':     'Fidel Namisi',
+            'genre':      '',
+            'url_slug':   '',
+            'patreon_url': '',
+            'website_url': '',
+            'created_at': now,
+        },
+        {
+            'id':         'BOOK_LAUNCH_2026',
+            'code':       'BOOK_LAUNCH_2026',
+            'title':      'Book Launch 2026',
+            'work_type':  'Fundraising Campaign',
+            'author':     'Fidel Namisi',
+            'genre':      '',
+            'url_slug':   '',
+            'patreon_url': '',
+            'website_url': '',
+            'created_at': now,
+        },
+        {
+            'id':         'WRITERS_RETREAT_2026',
+            'code':       'WRITERS_RETREAT_2026',
+            'title':      'Writers Retreat 2026',
+            'work_type':  'Retreat (Event)',
+            'author':     'Fidel Namisi',
+            'genre':      '',
+            'url_slug':   '',
+            'patreon_url': '',
+            'website_url': '',
+            'created_at': now,
+        },
+    ]
+    for s in samples:
+        if s['id'] not in existing_ids:
+            catalog['works'].append(s)
+            existing_ids.add(s['id'])
+            changed = True
+
+    if changed:
+        write_json('catalog_works.json', catalog)
+        print(f'[Migrate] Initialized catalog_works.json ({len(catalog["works"])} works)')
+
+
+def _migrate_series_config():
+    """
+    Phase 3 (Part 2): Initialize data/series_config.json if it doesn't exist.
+    This file holds user-added series (created via + New Work) that supplement
+    the hardcoded SERIES_CONFIG in services/chapter_html_template.py.
+    """
+    series_config_path = os.path.join(DATA_DIR, 'series_config.json')
+    if not os.path.exists(series_config_path):
+        write_json('series_config.json', {})
+        print('[Migrate] Initialized series_config.json')
 
 
 def retry_failed_messages():
