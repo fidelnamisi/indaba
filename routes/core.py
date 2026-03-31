@@ -16,7 +16,7 @@ bp = Blueprint('core', __name__)
 
 @bp.route('/api/hub/summary')
 def api_hub_summary():
-    pipeline         = read_json('content_pipeline.json') or []
+    pipeline           = read_json('content_pipeline.json') or []
     modules_producing  = sum(1 for e in pipeline if e.get('workflow_stage') == 'producing')
     modules_publishing = sum(1 for e in pipeline if e.get('workflow_stage') == 'publishing')
     modules_promoting  = sum(1 for e in pipeline if e.get('workflow_stage') == 'promoting')
@@ -129,6 +129,41 @@ def execute_plugin(plugin_name):
         return jsonify({'ok': True, 'result': result})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+# ── Pipeline Overview (Phase 3) ───────────────────────────────────────────────
+
+@bp.route('/api/pipeline/overview')
+def api_pipeline_overview():
+    pipeline = read_json('content_pipeline.json') or []
+
+    WORK_TYPES  = ['Book', 'Podcast', 'Fundraising Campaign', 'Retreat (Event)']
+    STAGES      = ['producing', 'publishing', 'promoting']
+
+    def count_by_type(stage):
+        breakdown = {wt: 0 for wt in WORK_TYPES}
+        for e in pipeline:
+            if e.get('workflow_stage') == stage:
+                wt = e.get('work_type', 'Book')
+                breakdown[wt] = breakdown.get(wt, 0) + 1
+        total = sum(breakdown.values())
+        return {'total': total, 'breakdown': breakdown}
+
+    counts = {s: count_by_type(s) for s in STAGES}
+
+    # Modules list for drill-down
+    modules = [
+        {
+            'id':         e.get('id'),
+            'title':      e.get('chapter', ''),
+            'work_name':  e.get('book', ''),
+            'work_type':  e.get('work_type', 'Book'),
+            'workflow_stage': e.get('workflow_stage', 'producing'),
+        }
+        for e in pipeline
+    ]
+
+    return jsonify({'counts': counts, 'modules': modules})
 
 
 # ── Frontend ──────────────────────────────────────────────────────────────────
