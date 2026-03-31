@@ -82,7 +82,7 @@ document.addEventListener('WHATSAPP_CRM_SEND_RESULT', async function(e) {
       toast(`WhatsApp send failed: ${reason || 'Unknown error'}`, 'error');
     }
     if (state.currentPromoTab === 'sender') loadPromoMessages();
-    if (state.currentMode === 'promote') await loadPromoLeads();
+    if (state.currentMode === 'promoting') await loadPromoLeads();
   } catch(err) {
     console.error('Failed to record extension result', err);
   }
@@ -110,12 +110,12 @@ async function switchMode(mode, pushState = true) {
   });
 
   // Load relevant data for the mode
-  if (mode === 'pipeline') {
-    await loadPipeline();
-  } else if (mode === 'works') {
-    await loadWorks();
-  } else if (mode === 'promote') {
-    // Default to broadcast-posts; avoid command-center (replaced by Pipeline/Works)
+  if (mode === 'producing') {
+    await loadProducing();
+  } else if (mode === 'publishing') {
+    await loadPublishing();
+  } else if (mode === 'promoting') {
+    // Default to broadcast-posts; avoid command-center (replaced by Producing/Publishing)
     if (!state.currentPromoTab ||
         state.currentPromoTab === 'command-center' ||
         state.currentPromoTab === 'promo-settings') {
@@ -186,9 +186,9 @@ async function switchPromoTab(tabName) {
 
 function handleRoute() {
   const path = window.location.pathname;
-  if (path === '/works')   switchMode('works',   false);
-  else if (path === '/promote') switchMode('promote', false);
-  else switchMode('pipeline', false); // Default
+  if (path === '/publishing')  switchMode('publishing',  false);
+  else if (path === '/promoting') switchMode('promoting', false);
+  else switchMode('producing', false); // Default (/producing or /)
 }
 
 window.onpopstate = () => handleRoute();
@@ -223,9 +223,9 @@ function updateClock() {
     if (timeEl) timeEl.textContent = timeStr;
 }
 
-// ── Pipeline Overview (Phase 3) ───────────────────────────────────────────────
+// ── Producing Dashboard (metric cards + drill-down) ──────────────────────────
 
-// contentWorkflow state for Pipeline screen
+// contentWorkflow state for Producing screen
 const pipelineState = {
   filter:        'All',   // 'All' | 'Book' | 'Podcast' | 'Campaign' | 'Event'
   activeStage:   'producing',
@@ -259,17 +259,21 @@ function wtLabel(workType) {
   return WT_FILTER_MAP[workType] || workType;
 }
 
-async function loadPipeline() {
-  const container = document.getElementById('pipeline-container');
+// Alias for backward compat inside module detail back-navigation
+async function loadPipeline() { return loadProducing(); }
+
+async function loadProducing() {
+  const container = document.getElementById('producing-container');
   if (!container) return;
   try {
     pipelineState.overviewData = await GET('/api/pipeline/overview');
     renderPipelineOverview(container);
   } catch (e) {
-    container.innerHTML = `<div class="stub-placeholder">Failed to load pipeline: ${e.message}</div>`;
+    container.innerHTML = `<div class="stub-placeholder">Failed to load: ${e.message}</div>`;
   }
 }
 
+function renderProducingOverview(container) { renderPipelineOverview(container); }
 function renderPipelineOverview(container) {
   const { counts, modules } = pipelineState.overviewData;
   const stages = [
@@ -359,74 +363,117 @@ function renderPipelineDrilldown(allModules) {
 function setPipelineFilter(filter) {
   pipelineState.filter = filter;
   if (!pipelineState.overviewData) return;
-  // Re-render just filter bar + drilldown (cards don't change)
-  const container = document.getElementById('pipeline-container');
+  const container = document.getElementById('producing-container');
   if (container) renderPipelineOverview(container);
 }
 
 function setPipelineStage(stage) {
   pipelineState.activeStage = stage;
   if (!pipelineState.overviewData) return;
-  const container = document.getElementById('pipeline-container');
+  const container = document.getElementById('producing-container');
   if (container) renderPipelineOverview(container);
 }
 
-// ── Works Screen (Phase 3) ────────────────────────────────────────────────────
+// ── Publishing Screen — hierarchical Works → Modules list ─────────────────────
 
-async function loadWorks() {
-  const container = document.getElementById('works-container');
+// Alias for backward compat
+async function loadWorks() { return loadPublishing(); }
+
+async function loadPublishing() {
+  const container = document.getElementById('publishing-container');
   if (!container) return;
   try {
-    const data = await GET('/api/pipeline/overview');
-    renderWorksScreen(container, data.modules);
+    const data = await GET('/api/catalog-works');
+    renderPublishingScreen(container, data.works);
   } catch (e) {
-    container.innerHTML = `<div class="stub-placeholder">Failed to load works: ${e.message}</div>`;
+    container.innerHTML = `<div class="stub-placeholder">Failed to load: ${e.message}</div>`;
   }
 }
 
-function renderWorksScreen(container, modules) {
-  const WORK_TYPES = ['Book', 'Podcast', 'Fundraising Campaign', 'Retreat (Event)'];
+// Track which Work rows are expanded
+const _expandedWorks = new Set();
 
-  const sectionsHtml = WORK_TYPES.map(wt => {
-    const wtModules = modules.filter(m => m.work_type === wt);
-    if (!wtModules.length) return '';
+function renderPublishingScreen(container, works) {
+  const topBar = `
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:24px;">
+      <h2 style="font-size:18px; font-weight:700;">Works</h2>
+      <button class="pipeline-open-btn" style="border-color:var(--accent); color:var(--accent); font-size:12px; padding:8px 16px;"
+              onclick="openNewWorkModal()">+ New Work</button>
+    </div>`;
 
-    // Group by work_name
-    const byWork = {};
-    wtModules.forEach(m => {
-      const key = m.work_name || 'Unknown';
-      if (!byWork[key]) byWork[key] = [];
-      byWork[key].push(m);
-    });
+  if (!works || !works.length) {
+    container.innerHTML = topBar + '<div class="stub-placeholder">No works yet. Create your first work above.</div>';
+    return;
+  }
 
-    const cardsHtml = wtModules.map(m => {
-      const stageClass = 'stage-' + (m.workflow_stage || 'producing');
-      const stageLabel = { producing: 'Producing', publishing: 'Publishing', promoting: 'Promoting' }[m.workflow_stage] || m.workflow_stage;
-      return `
-        <div class="works-card" onclick="openModuleDetail('${m.id}')">
-          <div class="works-card-header">
-            <div>
-              <div class="works-card-title">${m.title}</div>
-              <div class="works-card-work">${m.work_name}</div>
-            </div>
-            <div class="works-card-stage ${stageClass}">${stageLabel}</div>
-          </div>
-        </div>`;
-    }).join('');
+  const WORK_TYPE_ORDER = ['Book', 'Podcast', 'Fundraising Campaign', 'Retreat (Event)'];
+  const sorted = [...works].sort((a, b) => {
+    const ai = WORK_TYPE_ORDER.indexOf(a.work_type);
+    const bi = WORK_TYPE_ORDER.indexOf(b.work_type);
+    return ai - bi || a.title.localeCompare(b.title);
+  });
 
-    const sectionTitle = wt === 'Fundraising Campaign' ? 'Campaign' : wt === 'Retreat (Event)' ? 'Event' : wt;
-    return `
-      <div class="works-section">
-        <div class="works-section-header">
-          <span class="${wtBadgeClass(wt)}">${sectionTitle}</span>
-          <span class="works-section-title">${wt}</span>
-          <span class="works-section-count">${wtModules.length}</span>
-        </div>
-        <div class="works-grid">${cardsHtml}</div>
-      </div>`;
-  }).join('');
+  const rowsHtml = sorted.map(work => renderWorkRow(work)).join('');
+  container.innerHTML = topBar + `<div id="works-list" style="max-width:960px; margin:0 auto;">${rowsHtml}</div>`;
+}
 
-  container.innerHTML = `<div style="max-width:1100px; margin:0 auto;">${sectionsHtml}</div>`;
+function renderWorkRow(work) {
+  const isBook      = work.work_type === 'Book';
+  const isExpanded  = _expandedWorks.has(work.id);
+  const moduleCount = (work.modules || []).length;
+  const readyCount  = (work.modules || []).filter(m => m.has_prose).length;
+  const wtLabel2    = work.work_type === 'Fundraising Campaign' ? 'Campaign' :
+                      work.work_type === 'Retreat (Event)'       ? 'Event' : work.work_type;
+
+  const bulkBtn = isBook && readyCount > 0 ? `
+    <button class="pipeline-open-btn" style="font-size:11px; padding:4px 12px; margin-right:6px;"
+            onclick="event.stopPropagation(); openBulkPublishModal('${work.id}')">
+      Publish All
+    </button>` : '';
+
+  const expandIcon = isExpanded ? '▲' : '▼';
+  const header = `
+    <div class="works-row-header" onclick="toggleWorkExpand('${work.id}')">
+      <span class="${wtBadgeClass(work.work_type)}">${wtLabel2}</span>
+      <span class="works-row-title">${work.title}</span>
+      <span class="works-row-count">${moduleCount} module${moduleCount !== 1 ? 's' : ''}</span>
+      <div style="display:flex; align-items:center; gap:6px; margin-left:auto;">
+        ${bulkBtn}
+        <span class="works-row-expand">${expandIcon}</span>
+      </div>
+    </div>`;
+
+  let modulesHtml = '';
+  if (isExpanded && work.modules && work.modules.length) {
+    modulesHtml = `<div class="works-modules-list">` +
+      work.modules.map(m => {
+        const stageLabel = { producing: 'Producing', publishing: 'Publishing', promoting: 'Promoting' }[m.workflow_stage] || m.workflow_stage;
+        const stageClass = 'stage-' + (m.workflow_stage || 'producing');
+        return `
+          <div class="works-module-row">
+            <span class="works-module-num">${m.chapter_number || ''}</span>
+            <span class="works-module-title">${m.title}</span>
+            <span class="works-card-stage ${stageClass}" style="font-size:10px; padding:2px 7px;">${stageLabel}</span>
+            <button class="pipeline-open-btn" style="font-size:11px; padding:4px 10px;"
+                    onclick="openModuleDetail('${m.id}')">Open</button>
+          </div>`;
+      }).join('') +
+      `</div>`;
+  } else if (isExpanded) {
+    modulesHtml = `<div class="works-modules-list"><div style="color:var(--muted); font-size:13px; padding:10px 16px;">No modules yet.</div></div>`;
+  }
+
+  return `<div class="works-row" id="work-row-${work.id}">${header}${modulesHtml}</div>`;
+}
+
+function toggleWorkExpand(workId) {
+  if (_expandedWorks.has(workId)) {
+    _expandedWorks.delete(workId);
+  } else {
+    _expandedWorks.add(workId);
+  }
+  // Re-render just this row
+  loadPublishing();
 }
 
 // ── Module Detail View (Phase 4) ──────────────────────────────────────────────
@@ -435,7 +482,7 @@ function renderWorksScreen(container, modules) {
 const moduleDetailState = {
   module:       null,
   activeStage:  'producing',
-  originMode:   'pipeline',  // which mode opened this module
+  originMode:   'producing',  // which mode opened this module
 };
 
 async function openModuleDetail(moduleId) {
@@ -450,7 +497,7 @@ async function openModuleDetail(moduleId) {
     moduleDetailState.activeStage = module.workflow_stage || 'producing';
 
     // Render in the active mode container
-    const containerId = state.currentMode === 'works' ? 'works-container' : 'pipeline-container';
+    const containerId = state.currentMode === 'publishing' ? 'publishing-container' : 'producing-container';
     const container = document.getElementById(containerId);
     if (!container) return;
     renderModuleDetail(container);
@@ -515,8 +562,8 @@ function renderModuleDetail(container) {
   const workType   = m.work_type || 'Book';
   const workName   = m.book || '';
   const stageLabel = { producing: 'Producing', publishing: 'Publishing', promoting: 'Promoting' }[m.workflow_stage] || m.workflow_stage;
-  const backLabel  = moduleDetailState.originMode === 'works' ? 'Works' : 'Pipeline';
-  const backFn     = moduleDetailState.originMode === 'works' ? 'loadWorks' : 'loadPipeline';
+  const backLabel  = moduleDetailState.originMode === 'publishing' ? 'Publishing' : 'Producing';
+  const backFn     = moduleDetailState.originMode === 'publishing' ? 'loadPublishing' : 'loadProducing';
 
   container.innerHTML = `
     <div class="module-detail-view">
@@ -585,36 +632,78 @@ function renderProducingPanel(m) {
 }
 
 function renderPublishingPanel(m) {
-  const pub = m.publishing_status || {};
+  const pub   = m.publishing_status || {};
+  const isBook = (m.work_type || 'Book') === 'Book';
 
-  // Platform display labels
+  // Platform display labels (excludes 'website' for Books — shown separately as realmsandroads.com)
   const PLATFORM_LABELS = {
-    vip_group: 'VIP Group', patreon: 'Patreon', website: 'Website',
+    vip_group: 'VIP Group', patreon: 'Patreon',
     wa_channel: 'WA Channel', spotify: 'Spotify', apple_podcasts: 'Apple Podcasts',
     gofundme: 'GoFundMe', social: 'Social Pages',
     landing_page: 'Landing Page', eventbrite: 'Eventbrite',
   };
 
-  const rows = Object.entries(pub).map(([platform, status]) => {
-    const label      = PLATFORM_LABELS[platform] || platform;
-    const isPublished = status === 'published' || status === 'done';
-    const statusLabel = isPublished ? 'Published' : (status === 'in_progress' ? 'In Progress' : 'Not Started');
-    return `
-      <div class="module-platform-row">
-        <span class="module-platform-name">${label}</span>
-        <span class="module-platform-status${isPublished ? ' published' : ''}">${statusLabel}</span>
-        ${!isPublished ? `<button class="module-platform-mark-btn" onclick="markPlatformPublished('${m.id}', '${platform}')">Mark Published</button>` : ''}
+  // Standard platform rows (skip 'website' for Books — handled by special row below)
+  const platformRows = Object.entries(pub)
+    .filter(([platform]) => !(isBook && platform === 'website'))
+    .map(([platform, status]) => {
+      const label       = PLATFORM_LABELS[platform] || platform.replace(/_/g, ' ');
+      const isPublished = status === 'published' || status === 'done' || status === 'live';
+      const statusLabel = isPublished ? 'Published ✓' : (status === 'in_progress' ? 'In Progress' : 'Not Started');
+      return `
+        <div class="module-platform-row">
+          <span class="module-platform-name">${label}</span>
+          <span class="module-platform-status${isPublished ? ' published' : ''}">${statusLabel}</span>
+          ${!isPublished ? `<button class="module-platform-mark-btn" onclick="markPlatformPublished('${m.id}', '${platform}')">Mark Published</button>` : ''}
+        </div>`;
+    }).join('');
+
+  // realmsandroads.com row (Books only)
+  let rrRow = '';
+  if (isBook) {
+    const info     = m.website_publish_info || {};
+    const isLive   = info.status === 'live' || m.website_status === 'live';
+    const pubDate  = info.published_at ? new Date(info.published_at).toLocaleString('en-ZA', {
+      day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+    }) : '';
+    const chUrl    = info.chapter_url || '';
+
+    rrRow = `
+      <div class="module-asset-section-title">Website</div>
+      <div class="module-platform-row" id="rr-row-${m.id}">
+        <span class="module-platform-name" style="font-weight:600;">realmsandroads.com</span>
+        ${isLive
+          ? `<span class="module-platform-status published">Published ✓  ${pubDate}</span>
+             ${chUrl ? `<a href="https://www.realmsandroads.com${chUrl}" target="_blank" class="module-platform-mark-btn" style="text-decoration:none;">View Post ↗</a>` : ''}`
+          : `<span class="module-platform-status">Not Published</span>
+             <button class="module-platform-mark-btn" style="background:var(--accent); color:var(--bg); border-color:var(--accent); font-weight:700;"
+                     onclick="publishChapterToWebsite('${m.id}')">Publish Now</button>`
+        }
       </div>`;
-  }).join('');
+  }
 
   return `
     <div class="module-detail-panel-title">Stage 2: Publishing</div>
-    <div class="module-asset-section-title">Platforms</div>
-    ${rows || '<div style="color:var(--muted);font-size:13px;padding:8px 0;">No platforms configured.</div>'}
+    ${rrRow}
+    ${platformRows ? `<div class="module-asset-section-title">Other Platforms</div>${platformRows}` : (!isBook ? '<div style="color:var(--muted);font-size:13px;padding:8px 0;">No platforms configured.</div>' : '')}
     <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
       <button class="module-asset-action" onclick="moveModuleToStage('${m.id}', 'producing')" style="color:var(--muted)">← Back to Producing</button>
       <button class="module-asset-action" onclick="moveModuleToStage('${m.id}', 'promoting')" style="border-color:var(--accent)">→ Move to Promoting</button>
     </div>`;
+}
+
+async function publishChapterToWebsite(moduleId) {
+  const btn = document.querySelector(`#rr-row-${moduleId} button`);
+  if (btn) { btn.disabled = true; btn.textContent = 'Publishing…'; }
+  try {
+    const result = await POST('/api/website/publish', { entry_id: moduleId });
+    toast('Published to realmsandroads.com ✓', 'success');
+    // Refresh the module detail to show updated status
+    await openModuleDetail(moduleId);
+  } catch (e) {
+    toast('Publish failed: ' + e.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Publish Now'; }
+  }
 }
 
 function renderPromotingPanel(m) {
@@ -645,7 +734,7 @@ function renderPromotingPanel(m) {
     <div class="module-asset-row">
       <div class="module-asset-dot dot-optional"></div>
       <span class="module-asset-name">Contacts &amp; Leads for this module</span>
-      <button class="module-asset-action" onclick="switchMode('promote').then(()=>switchPromoTab('contacts'))">View CRM</button>
+      <button class="module-asset-action" onclick="switchMode('promoting').then(()=>switchPromoTab('contacts'))">View CRM</button>
     </div>
     <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
       <button class="module-asset-action" onclick="moveModuleToStage('${m.id}', 'publishing')" style="color:var(--muted)">← Back to Publishing</button>
@@ -689,7 +778,7 @@ async function markPlatformPublished(moduleId, platform) {
 
 async function queueBroadcastAction(moduleId, actionKey) {
   // Navigate to promote / broadcast-posts for now
-  await switchMode('promote');
+  await switchMode('promoting');
   await switchPromoTab('broadcast-posts');
   toast('Navigated to Broadcast Posts — queue your post there.', 'info');
 }
@@ -697,6 +786,214 @@ async function queueBroadcastAction(moduleId, actionKey) {
 function viewModuleAsset(moduleId, assetKey) {
   // Navigate to the publishing screen for this chapter
   toast('Asset view — open the chapter in the publishing screen.', 'info');
+}
+
+// ── + New Work Modal ──────────────────────────────────────────────────────────
+
+function openNewWorkModal() {
+  const mc = document.getElementById('modal-content');
+  if (!mc) return;
+  mc.innerHTML = renderNewWorkStep1();
+  showModal();
+}
+
+function renderNewWorkStep1() {
+  const types = ['Book', 'Podcast', 'Fundraising Campaign', 'Retreat (Event)'];
+  const btns  = types.map(t => `
+    <button class="type-btn" style="padding:12px 20px; margin:6px; font-size:13px; min-width:140px;"
+            onclick="selectNewWorkType('${t}')">${t}</button>`).join('');
+  return `
+    <div class="modal-title">New Work</div>
+    <div class="modal-subtitle" style="margin-bottom:20px;">What type of Work are you creating?</div>
+    <div style="display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px;">${btns}</div>`;
+}
+
+function selectNewWorkType(workType) {
+  const mc = document.getElementById('modal-content');
+  if (!mc) return;
+  mc.innerHTML = renderNewWorkForm(workType);
+}
+
+function renderNewWorkForm(workType) {
+  const isBook = workType === 'Book';
+
+  const bookFields = isBook ? `
+    <div class="form-group">
+      <label class="form-label">Series Code <span style="color:var(--muted);font-weight:400;">(short uppercase ID, e.g. ROTRQ)</span></label>
+      <input id="nw-series-code" class="form-input" placeholder="e.g. MYBOOK" style="text-transform:uppercase;"
+             oninput="this.value=this.value.toUpperCase()"/>
+      <div style="font-size:11px; color:var(--muted); margin-top:4px;">A short unique ID for this book. Used internally and in file names.</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">URL Slug <span style="color:var(--muted);font-weight:400;">(used in realmsandroads.com URLs)</span></label>
+      <input id="nw-url-slug" class="form-input" placeholder="e.g. my-book-title"/>
+      <div style="font-size:11px; color:var(--muted); margin-top:4px;">How this book appears in the website URL. Use lowercase and hyphens.</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Genre</label>
+      <input id="nw-genre" class="form-input" placeholder="e.g. Epic Fantasy"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Bulk Chapter Import <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
+      <textarea id="nw-chapters-text" class="form-textarea" style="min-height:160px; font-family:var(--font-mono); font-size:12px;"
+                placeholder="## Chapter One Title&#10;Chapter prose goes here...&#10;&#10;## Chapter Two Title&#10;More prose..."></textarea>
+      <div style="font-size:11px; color:var(--muted); margin-top:4px;">
+        Paste multiple chapters using <code>## Chapter Title</code> as the delimiter between chapters.
+        Each chapter's prose is imported directly as the Essential Asset.
+      </div>
+    </div>` : '';
+
+  return `
+    <div class="modal-title">New ${workType}</div>
+    <div class="form-group" style="margin-top:16px;">
+      <label class="form-label">Title</label>
+      <input id="nw-title" class="form-input" placeholder="${workType} title"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Author</label>
+      <input id="nw-author" class="form-input" placeholder="Author name" value="Fidel Namisi"/>
+    </div>
+    ${bookFields}
+    <div class="form-group">
+      <label class="form-label">Patreon URL <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
+      <input id="nw-patreon-url" class="form-input" placeholder="https://patreon.com/..."/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Website URL <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
+      <input id="nw-website-url" class="form-input" placeholder="https://..."/>
+    </div>
+    <div class="modal-actions" style="display:flex; justify-content:space-between; margin-top:24px;">
+      <button class="btn-secondary" onclick="openNewWorkModal()">← Back</button>
+      <button class="btn-primary" onclick="submitNewWork('${workType}')">Create ${workType}</button>
+    </div>`;
+}
+
+async function submitNewWork(workType) {
+  const title       = document.getElementById('nw-title')?.value.trim();
+  const author      = document.getElementById('nw-author')?.value.trim() || 'Fidel Namisi';
+  const seriesCode  = document.getElementById('nw-series-code')?.value.trim().toUpperCase();
+  const urlSlug     = document.getElementById('nw-url-slug')?.value.trim().toLowerCase();
+  const genre       = document.getElementById('nw-genre')?.value.trim() || '';
+  const patreonUrl  = document.getElementById('nw-patreon-url')?.value.trim() || '';
+  const websiteUrl  = document.getElementById('nw-website-url')?.value.trim() || '';
+  const chaptersText= document.getElementById('nw-chapters-text')?.value.trim() || '';
+
+  if (!title) { toast('Title is required', 'error'); return; }
+  if (workType === 'Book') {
+    if (!seriesCode) { toast('Series code is required for Books', 'error'); return; }
+    if (!urlSlug)    { toast('URL slug is required for Books', 'error'); return; }
+  }
+
+  try {
+    const result = await POST('/api/catalog-works', {
+      title, work_type: workType, author, genre,
+      series_code: seriesCode, url_slug: urlSlug,
+      patreon_url: patreonUrl, website_url: websiteUrl,
+      chapters_text: chaptersText,
+    });
+    const imported = result.chapters_imported || 0;
+    closeModal();
+    toast(`Created "${title}"${imported ? ` · ${imported} chapters imported` : ''}`, 'success');
+    // Navigate to Publishing screen and expand the new work
+    _expandedWorks.add(result.work.id);
+    await switchMode('publishing');
+  } catch (e) {
+    toast('Failed to create work: ' + e.message, 'error');
+  }
+}
+
+// ── Bulk Publish Modal ────────────────────────────────────────────────────────
+
+async function openBulkPublishModal(workCode) {
+  const mc = document.getElementById('modal-content');
+  if (!mc) return;
+  mc.innerHTML = '<div style="padding:20px; color:var(--muted);">Loading chapters…</div>';
+  showModal();
+
+  try {
+    const catalog = await GET('/api/catalog-works');
+    const work    = (catalog.works || []).find(w => w.id === workCode);
+    if (!work) { mc.innerHTML = '<div style="padding:20px;">Work not found</div>'; return; }
+
+    const readyModules = (work.modules || []).filter(m => m.has_prose);
+    if (!readyModules.length) {
+      mc.innerHTML = `<div class="modal-title">Publish All — ${work.title}</div>
+        <div style="padding:16px; color:var(--muted);">No chapters with prose are ready to publish.</div>
+        <div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Close</button></div>`;
+      return;
+    }
+
+    const rows = readyModules.map(m => {
+      const isLive = m.website_status === 'live';
+      const pubInfo = m.website_publish_info;
+      const statusText = isLive
+        ? `<span style="color:#4caf7d; font-size:11px; font-family:var(--font-mono);">Published ✓${pubInfo?.published_at ? '  ' + new Date(pubInfo.published_at).toLocaleDateString('en-ZA') : ''}</span>`
+        : `<span style="color:var(--muted); font-size:11px; font-family:var(--font-mono);">Not published</span>`;
+      return `
+        <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border);">
+          <input type="checkbox" id="bulk-ch-${m.id}" value="${m.id}" ${isLive ? '' : 'checked'}
+                 style="width:16px; height:16px; accent-color:var(--accent); cursor:pointer; flex-shrink:0;"/>
+          <label for="bulk-ch-${m.id}" style="flex:1; font-size:13px; cursor:pointer;">
+            Ch ${m.chapter_number}. ${m.title}
+          </label>
+          ${statusText}
+        </div>`;
+    }).join('');
+
+    mc.innerHTML = `
+      <div class="modal-title">Publish All — ${work.title}</div>
+      <div style="font-size:13px; color:var(--muted); margin-bottom:16px;">
+        ${readyModules.length} chapters ready. Select which to publish to realmsandroads.com.
+      </div>
+      <div id="bulk-chapters-list" style="max-height:340px; overflow-y:auto; margin-bottom:16px;">${rows}</div>
+      <div id="bulk-progress" style="display:none; margin-bottom:16px;"></div>
+      <div class="modal-actions" style="display:flex; justify-content:space-between;">
+        <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn-primary" id="bulk-publish-btn" onclick="runBulkPublish('${workCode}')">
+          Publish Selected
+        </button>
+      </div>`;
+  } catch (e) {
+    mc.innerHTML = `<div style="padding:20px; color:var(--p1);">Error: ${e.message}</div>`;
+  }
+}
+
+async function runBulkPublish(workCode) {
+  const btn = document.getElementById('bulk-publish-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Publishing…'; }
+
+  // Collect selected IDs
+  const checkboxes = document.querySelectorAll('#bulk-chapters-list input[type=checkbox]:checked');
+  const entryIds   = Array.from(checkboxes).map(cb => cb.value);
+  if (!entryIds.length) { toast('No chapters selected', 'error'); if (btn) { btn.disabled = false; btn.textContent = 'Publish Selected'; } return; }
+
+  const progressEl = document.getElementById('bulk-progress');
+  if (progressEl) {
+    progressEl.style.display = 'block';
+    progressEl.innerHTML = `<div style="font-size:12px; color:var(--muted); font-family:var(--font-mono);">Publishing ${entryIds.length} chapters…</div>`;
+  }
+
+  try {
+    const result = await POST('/api/website/publish-batch', { entry_ids: entryIds });
+    const results = result.results || [];
+    const done    = results.filter(r => r.ok).length;
+    const failed  = results.filter(r => !r.ok);
+
+    let summary = `<div style="font-size:13px; margin-top:4px;"><b>${done}</b> published`;
+    if (failed.length) {
+      summary += `, <b style="color:var(--p1);">${failed.length} failed</b>:`;
+      summary += failed.map(f => `<div style="color:var(--p1); font-size:12px; margin-top:4px;">· ${f.entry_id}: ${f.error || 'unknown error'}</div>`).join('');
+    }
+    summary += '</div>';
+
+    if (progressEl) progressEl.innerHTML = summary;
+    if (btn) { btn.textContent = 'Done'; }
+    toast(`${done} chapter${done !== 1 ? 's' : ''} published`, done === entryIds.length ? 'success' : 'error');
+  } catch (e) {
+    if (progressEl) progressEl.innerHTML = `<div style="color:var(--p1); font-size:13px;">Error: ${e.message}</div>`;
+    if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
+    toast('Bulk publish failed: ' + e.message, 'error');
+  }
 }
 
 // ── Settings Modal (Phase 5) ──────────────────────────────────────────────────
@@ -770,6 +1067,31 @@ function renderSettingsModal(body, promo, app) {
         <tr><td>Delivery Hour (24h)</td><td><input class="form-input" type="number" id="s-delivery-hour" value="${escHtml(String(promo.delivery_hour ?? 8))}"/></td></tr>
         <tr><td>Posting Days</td><td><input class="form-input" id="s-posting-days" value="${escHtml((promo.posting_days || []).join(', '))}"/></td></tr>
       </table>
+    </div>
+    <div id="settings-pane-website" class="settings-tab-pane">
+      <div class="settings-section-title">Website Connection</div>
+      <table class="settings-kv-table">
+        <tr>
+          <td>Website Directory</td>
+          <td><input class="form-input" id="s-website-dir" value="${escHtml((app.website || {}).website_dir || '')}"
+                     placeholder="/path/to/realmsandroads-website"/></td>
+        </tr>
+        <tr>
+          <td>Auto-deploy on publish</td>
+          <td>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input type="checkbox" id="s-auto-deploy" ${(app.website || {}).auto_deploy ? 'checked' : ''}
+                     style="width:16px;height:16px;accent-color:var(--accent);"/>
+              <span style="font-size:13px;">Run redeploy.sh automatically after each publish</span>
+            </label>
+          </td>
+        </tr>
+      </table>
+      <div style="margin-top:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <button class="module-asset-action" style="border-color:var(--accent);color:var(--accent);font-size:12px;padding:8px 16px;"
+                onclick="testWebsiteConnection()">Test Connection</button>
+        <span id="website-connection-status" style="font-size:12px;font-family:var(--font-mono);"></span>
+      </div>
     </div>`;
 }
 
@@ -792,10 +1114,35 @@ async function saveSettingsModal() {
     patchPromo.posting_days  = postDays;
 
     await PUT('/api/promo/settings', patchPromo);
+
+    // Website settings
+    const websiteDir = document.getElementById('s-website-dir')?.value.trim() || '';
+    const autoDeploy = document.getElementById('s-auto-deploy')?.checked || false;
+    await PUT('/api/settings', { website: { website_dir: websiteDir, auto_deploy: autoDeploy } });
+
     toast('Settings saved', 'success');
     closeSettingsModal();
   } catch (e) {
     toast('Save failed: ' + e.message, 'error');
+  }
+}
+
+async function testWebsiteConnection() {
+  const statusEl = document.getElementById('website-connection-status');
+  if (statusEl) statusEl.textContent = 'Checking…';
+  try {
+    // Save current website_dir first so the check uses the new value
+    const websiteDir = document.getElementById('s-website-dir')?.value.trim() || '';
+    await PUT('/api/settings', { website: { website_dir: websiteDir } });
+
+    const result = await GET('/api/website/status');
+    if (result.ok) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:#4caf7d;">Ready ✓</span>';
+    } else {
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--p1);">✗ ${escHtml(result.error || 'Not ready')}</span>`;
+    }
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = `<span style="color:var(--p1);">✗ ${escHtml(e.message)}</span>`;
   }
 }
 
@@ -7966,7 +8313,7 @@ function renderDashboard() {
                 const nextStage = idx >= 0 && idx < STAGES.length - 3 ? STAGES[idx + 1] : null;
                 return `
                 <div class="dash-deal-followup" style="padding:6px;background:var(--surface);border-radius:4px;margin-bottom:4px;">
-                  <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="switchMode('promote').then(()=>switchPromoTab('leads').then(()=>openLeadDetail('${l.id}')))">
+                  <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="switchMode('promoting').then(()=>switchPromoTab('leads').then(()=>openLeadDetail('${l.id}')))">
                     <div>
                       <div style="font-size:12px;font-weight:600;">${esc(l.contact_name)}</div>
                       <div style="font-size:11px;color:var(--muted);">${esc(l.product)}</div>
@@ -7983,8 +8330,8 @@ function renderDashboard() {
             </div>
           ` : ''}
           <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
-            <button class="btn-secondary" style="font-size:11px;" onclick="switchMode('promote'); switchPromoTab('leads');">View Pipeline</button>
-            <button class="btn-secondary" style="font-size:11px;" onclick="switchMode('promote'); switchPromoTab('contacts');">Add Contact</button>
+            <button class="btn-secondary" style="font-size:11px;" onclick="switchMode('promoting'); switchPromoTab('leads');">View Pipeline</button>
+            <button class="btn-secondary" style="font-size:11px;" onclick="switchMode('promoting'); switchPromoTab('contacts');">Add Contact</button>
           </div>
         </div>
       </div>

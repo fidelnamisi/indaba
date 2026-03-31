@@ -13,9 +13,9 @@
   <div class="topbar-left">
     <div class="logo">Indaba</div>
     <nav class="topbar-nav" id="top-nav">
-      <button class="mode-btn active" data-mode="pipeline" onclick="switchMode('pipeline')">PIPELINE</button>
-      <button class="mode-btn" data-mode="works" onclick="switchMode('works')">WORKS</button>
-      <button class="mode-btn" data-mode="promote" onclick="switchMode('promote')">PROMOTE</button>
+      <button class="mode-btn active" data-mode="producing" onclick="switchMode('producing')">PRODUCING</button>
+      <button class="mode-btn" data-mode="publishing" onclick="switchMode('publishing')">PUBLISHING</button>
+      <button class="mode-btn" data-mode="promoting" onclick="switchMode('promoting')">PROMOTING</button>
     </nav>
     <div id="topbar-date" class="topbar-date"></div>
   </div>
@@ -33,22 +33,22 @@
 <!-- ── MAIN ────────────────────────────────────────────────────── -->
 <div id="main-content">
 
-  <!-- MODE: PIPELINE (Content Workflow Overview) -->
-  <div id="view-pipeline" class="mode-view">
-    <div id="pipeline-container" class="view-container">
-      <!-- Phase 3: Pipeline Overview — metric cards + drill-down list -->
+  <!-- MODE: PRODUCING (Content Workflow Overview — metric cards + drill-down) -->
+  <div id="view-producing" class="mode-view">
+    <div id="producing-container" class="view-container">
+      <!-- loadProducing(): dashboard metric cards + drill-down -->
     </div>
   </div>
 
-  <!-- MODE: WORKS (Browse & manage all Works and Modules) -->
-  <div id="view-works" class="mode-view" style="display:none;">
-    <div id="works-container" class="view-container">
-      <!-- Phase 3/4: Works screen — Content Schema + Workflow status per Module -->
+  <!-- MODE: PUBLISHING (Hierarchical Works → Modules list) -->
+  <div id="view-publishing" class="mode-view" style="display:none;">
+    <div id="publishing-container" class="view-container">
+      <!-- loadPublishing(): hierarchical Works list with + New Work -->
     </div>
   </div>
 
-  <!-- MODE: PROMOTE (Broadcast layer + CRM layer) -->
-  <div id="view-promote" class="mode-view" style="display:none;">
+  <!-- MODE: PROMOTING (Broadcast layer + CRM layer) -->
+  <div id="view-promoting" class="mode-view" style="display:none;">
     <div class="manage-layout">
       <div class="manage-sidebar">
         <div class="promo-tab-bar">
@@ -90,6 +90,7 @@
       <button class="settings-tab-btn active" data-settings-tab="branding"  onclick="switchSettingsTab('branding')">Branding</button>
       <button class="settings-tab-btn"         data-settings-tab="ai"       onclick="switchSettingsTab('ai')">AI Providers</button>
       <button class="settings-tab-btn"         data-settings-tab="schedule" onclick="switchSettingsTab('schedule')">Schedule</button>
+      <button class="settings-tab-btn"         data-settings-tab="website"  onclick="switchSettingsTab('website')">Website</button>
     </div>
     <div id="settings-modal-body">
       <!-- Loaded dynamically by loadSettingsModal() -->
