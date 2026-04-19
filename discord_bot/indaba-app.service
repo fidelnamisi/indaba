@@ -1,0 +1,25 @@
+[Unit]
+Description=Indaba Flask App (EC2 ops instance)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/indaba-app
+ExecStart=/opt/indaba-app/venv/bin/python app.py
+Restart=always
+RestartSec=10
+
+# ── Environment ──────────────────────────────────────────────────────────────
+Environment="ANTHROPIC_API_KEY=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"
+Environment="EC2_SENDER_URL=http://localhost:5555"
+Environment="GOWA_BASE_URL=http://localhost:3000"
+Environment="GOWA_AUTH=admin:admin"
+Environment="GOWA_CHANNEL_ID=120363422545873811@newsletter"
+Environment="GOWA_DEVICE_ID=599f721c-e61a-4315-9a12-f78dace0f89f"
+Environment="INDABA_S3_BUCKET=indaba-media-fidel"
+Environment="PORT=5050"
+Environment="DEEPSEEK_API_KEY=sk-6277269ac898471a8faa4ee4074049be"
+
+[Install]
+WantedBy=multi-user.target

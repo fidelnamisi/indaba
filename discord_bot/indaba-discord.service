@@ -1,0 +1,27 @@
+[Unit]
+Description=Indaba Discord Bot
+After=network.target indaba-app.service
+Wants=indaba-app.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/indaba-discord
+ExecStart=/opt/indaba-discord/venv/bin/python bot.py
+Restart=always
+RestartSec=10
+
+# ── Environment ──────────────────────────────────────────────────────────────
+# Fill in DISCORD_BOT_TOKEN after creating the Discord application.
+# All other values are pre-configured for this EC2 instance.
+Environment="DISCORD_BOT_TOKEN=PASTE_TOKEN_HERE"
+Environment="INDABA_CHANNEL=indaba-ops"
+Environment="INDABA_BASE_URL=http://localhost:5050"
+Environment="ANTHROPIC_API_KEY=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"
+Environment="EC2_SENDER_URL=http://localhost:5555"
+Environment="INDABA_REPO_DIR=/opt/indaba-app"
+# GITHUB_TOKEN enables git push from EC2 — set after bot is running
+Environment="GITHUB_TOKEN="
+
+[Install]
+WantedBy=multi-user.target

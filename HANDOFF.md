@@ -1,195 +1,172 @@
-# Indaba — Handoff Document
-**Last updated:** 2026-04-16
-**Session summary:** Designed the Panorama mode UI. No code was written — this was a pure design session. The full data model and display logic for Panorama is now agreed and documented below.
+# Indaba Handoff Log
 
 ---
 
-## HOW TO START THE NEXT SESSION
+## 2026-04-19 — Discord Bot + EC2 Indaba Deployment
 
-### Standard mode:
+### What was built
+
+**Indaba Bot** — a Discord bot that lets you operate Indaba from any Discord channel, 24/7, even when your Mac is off.
+
+---
+
+### Architecture
+
+```
+Discord (your phone / any device)
+        │
+        ▼
+Indaba Bot (EC2 /opt/indaba-discord, port — none, systemd service: indaba-discord)
+        │
+        ├──► Indaba Flask API (EC2 /opt/indaba-app:5050, systemd service: indaba-app)
+        │         └── data/ seeded from Mac on 2026-04-19 (74 pipeline entries)
+        │
+        └──► EC2 Sender health (localhost:5555)
+```
+
+The Mac stays your **development** instance. EC2 is the **ops** instance. They share the same GitHub repo but have independent data directories. When the Mac modifies data, push to GitHub and re-seed EC2 if needed.
+
+---
+
+### Activating the Bot — One-Time Setup Required
+
+The bot code is deployed and ready. You just need a Discord token:
+
+**Step 1 — Create the Discord Application**
+1. Go to https://discord.com/developers/applications
+2. Click "New Application" → name it "Indaba Bot"
+3. Go to "Bot" tab → click "Add Bot"
+4. Under "Privileged Gateway Intents" enable **Message Content Intent**
+5. Copy the **Bot Token**
+
+**Step 2 — Invite the Bot to your Server**
+1. Go to "OAuth2" → "URL Generator"
+2. Scopes: `bot`
+3. Bot Permissions: `Send Messages`, `Read Message History`, `View Channels`
+4. Copy the URL and open it → select your server
+
+**Step 3 — Create the #indaba-ops channel** in your Discord server
+
+**Step 4 — Add the token to EC2**
 ```bash
-cd /Users/fidelnamisi/Indaba
-claude
+ssh -i ~/Indaba/ec2-key.pem ubuntu@13.218.60.13
+sudo nano /etc/systemd/system/indaba-discord.service
+# Replace: DISCORD_BOT_TOKEN=PASTE_TOKEN_HERE
+# With:    DISCORD_BOT_TOKEN=your_actual_token
+sudo systemctl daemon-reload
+sudo systemctl start indaba-discord
+sudo systemctl status indaba-discord
 ```
 
-### With full permissions:
+**Step 5 — (Optional) Enable GitHub push from bot's `!idea` command**
 ```bash
-cd /Users/fidelnamisi/Indaba
-claude --dangerously-skip-permissions
-```
-
-Claude Code reads `CLAUDE.md` (project instructions) and `indaba-sla.md` (SLA) on startup. This `HANDOFF.md` gives the session context.
-
----
-
-## ⚡ FIRST TASK NEXT SESSION — BUILD PANORAMA MODE
-
-The design is fully agreed. Build it. Reference the Miro board for visual layout:
-**https://miro.com/app/board/uXjVGh5GEy8=**
-
----
-
-## PANORAMA MODE — AGREED DESIGN
-
-### Philosophy
-Panorama is a single-screen dashboard that shows the status of every chapter across three parallel workflows: Production, Publishing, and Promotion. It is the "control tower" view — you can see at a glance what's done, what's pending, and where things are out of sync.
-
-### Layout
-Three persistent vertical panels side by side:
-
-| Production | Publishing | Promotion |
-|---|---|---|
-| Blue header | Green header | Purple header |
-| Asset → Revision → Status | Platform → Revision → Status | Campaign → Revision → Status |
-
-### Row hierarchy (toggles)
-```
-▼ ROTRQ  (book/work level — toggle collapses all chapters)
-  ▼ Chapter 1  (chapter level — toggle collapses assets/platforms/campaigns)
-    [Production]   Prose      Rev 1  ✓
-                   Blurb      Rev 1  ✓
-                   Tagline    Rev 1  ✓
-                   Header     Rev 1  ✓
-    [Publishing]   ▼ website        Rev 1  ⚠️
-                       Prose        Rev 1  ✓
-                       Blurb        Rev 1  ✓
-                       Tagline      Rev 1  ✓
-                       Header       Rev 1  ✗  ← pending
-                   ▼ patreon        Rev 2  ✓
-                       Prose        Rev 1  ✓
-                       Blurb        Rev 1  ✓
-                       Tagline      Rev 1  ✓
-                       Header       Rev 2  ✓  ← updated
-    [Promotion]    WA Serialization  Rev 1  ✓
-                   Social            Rev 1  ✗
-```
-
-### Panel depths
-- **Production**: 2 levels — Chapter → Assets (Prose, Blurb, Tagline, Header)
-- **Publishing**: 3 levels — Chapter → Platform (website, patreon) → Assets. Platform row shows summary status (⚠️ if any asset lags). Expand to see per-asset breakdown.
-- **Promotion**: 2 levels — Chapter → Campaigns (WA Serialization, Social). No third level — a campaign always promotes the whole chapter as a unit.
-
-### Sub-column headers
-- Production: Asset | Revision | Status
-- Publishing: Platform | Revision | Status
-- Promotion: Campaign | Revision | Status
-
-### Status indicators
-- ✓ = complete/published/sent
-- ✗ = pending/not done
-- ⚠️ = partial (summary level only — used on Publishing platform rows when assets are mixed)
-
-### Filter bar
-- All Books dropdown
-- Any Status dropdown
-- Search input
-
-### Header
-- Title: "Chapter Publishing & Promotion"
-- Search box (top right)
-- "+ Add Chapter" button (top right)
-
-### Footer
-- "Showing N books, N chapters"
-- Pagination controls
-
----
-
-## PREVIOUS SESSION FIRST TASK (still open) — TEST & WIRE UP CRM
-
-The People/CRM mode was built this session and needs testing before it's considered production-ready. Start the next session by restarting the server and running through this checklist:
-
-### 1. Contacts tab
-- [ ] Add a contact manually (name + phone + email)
-- [ ] Import a CSV (use the format: `Number,Name,email` — same as the test file in `/Users/fidelnamisi/Github/laravel-crm/import test1.csv`)
-- [ ] Search/filter contacts
-- [ ] Open a contact panel and verify leads are shown
-
-### 2. Pipeline tab
-- [ ] Create a lead from a contact (Retreat pipeline + Subscription pipeline)
-- [ ] Verify Kanban board shows the lead in the correct stage column
-- [ ] Move a lead to a different stage
-- [ ] Mark a lead as Won / Lost
-- [ ] Mark a Subscription lead as Cancelled (post-win)
-- [ ] Re-open a closed lead
-
-### 3. Outreach tab — MESSAGE SENDING (critical)
-- [ ] Open a lead, type a message, click **"Send via WA"** — verify GOWA delivers it to the contact's phone
-- [ ] Check that the message appears in the communication log
-- [ ] Open the **"Log Message"** button on Outreach tab, pick a contact + lead, log manually
-- [ ] Verify the manual entry appears in the Outreach weekly table
-- [ ] Click "Copy Weekly Report" and verify the clipboard text is formatted correctly
-- [ ] Click the target number to edit the weekly target — verify it saves and persists
-
-### 4. Dashboard tab
-- [ ] After creating some Won/Lost leads with values, verify revenue figures show correctly
-- [ ] Verify pipeline stage breakdown bars render correctly
-
----
-
-## WHAT WAS BUILT THIS SESSION
-
-### Scheduler (ENFORCED META-SCHEDULE v2)
-- **Backend:** `routes/scheduler_agent.py`
-- **Endpoints:** `GET /api/scheduler/preview`, `POST /api/scheduler/run`, `GET/POST /api/scheduler/clean-queue`
-- **UI:** PROMOTING → Outbox tab — "Preview Schedule", "Run Scheduler", "Audit Queue", "Clean Queue" buttons
-- **Slot times (SAST):** Mon–Sat 07:30 PROVERB · 12:15 NOVEL_SERIAL · 18:30 FLASH_FICTION; Sun 09:00 PROVERB
-- **EC2 queue was cleaned:** 2 wrong times fixed, 4 duplicates deleted
-
-### CRM People Mode
-- **Backend:** `routes/crm_people.py` — full CRUD for contacts, leads, pipelines, outreach KPI, dashboard
-- **Data files:** `data/crm_contacts.json` (migrated from promo_contacts.json), `data/crm_leads.json`, `data/crm_pipelines.json`, `data/crm_settings.json`
-- **Pipelines:**
-  - Retreat (Event): Enquiry → Qualified → Proposal Sent → Negotiation → Confirmed/Lost
-  - Subscription: Enquiry → Qualified → Negotiation → Won/Lost/Cancelled
-- **4 tabs in People mode:** Contacts · Pipeline (Kanban) · Outreach (KPI + weekly report) · Dashboard
-- **Communication log:** per lead, logged_via crm (sends via GOWA) or manual
-- **Weekly outreach report:** copy-pasteable text for stickk.com accountability
-
-### Key API endpoints
-```
-GET/POST  /api/crm/contacts
-POST      /api/crm/contacts/import     (CSV upload)
-GET/PUT/DELETE /api/crm/contacts/<id>
-GET/POST  /api/crm/leads
-GET/PUT/DELETE /api/crm/leads/<id>
-PUT       /api/crm/leads/<id>/stage
-POST      /api/crm/leads/<id>/close    { outcome: won|lost|cancelled }
-POST      /api/crm/leads/<id>/reopen
-POST      /api/crm/leads/<id>/messages (log outreach)
-DELETE    /api/crm/leads/<id>/messages/<msg_id>
-GET       /api/crm/pipelines
-GET/PUT   /api/crm/settings
-GET       /api/crm/outreach/weekly     (?week_start=YYYY-MM-DD)
-GET       /api/crm/outreach/report
-GET       /api/crm/dashboard
+# Create a GitHub Personal Access Token with repo scope at github.com/settings/tokens
+sudo nano /etc/systemd/system/indaba-discord.service
+# Set GITHUB_TOKEN=your_github_pat
+sudo systemctl daemon-reload && sudo systemctl restart indaba-discord
 ```
 
 ---
 
-## KNOWN OPEN ITEM
+### Bot Commands
 
-**Proverbs have no generated images** — 213 proverbs exist in promo_proverbs.json with `queue_status: null` but none have `composite_path` set (no generated images). The scheduler skips them. Images need to be generated before the PROVERB slots will be filled. This is a separate workflow (image generation for each proverb).
+| Command | What it does |
+|---------|-------------|
+| `!hub` | Pipeline overview (producing/publishing/promoting counts) |
+| `!pipeline [book] [stage]` | List pipeline entries, optionally filtered |
+| `!entry <id>` | Get details on one pipeline entry |
+| `!stage <id> <stage>` | Move entry to producing\|publishing\|promoting |
+| `!publish <id>` | Publish chapter to realmsandroads.com |
+| `!deploy` | Deploy website to AWS Amplify |
+| `!deploystatus` | Check deploy status |
+| `!sync <work_code>` | Compare pipeline vs live website |
+| `!works` | List all book series |
+| `!status` | EC2 sender health |
+| `!idea <text>` | Capture idea → ROADMAP.md → GitHub |
+| `!help` | Full command list |
+
+Natural language also works — any message not starting with `!` is parsed by Claude Haiku.
+
+**Book codes:** LB, OAO, ROTRQ, MOSAS  
+**Stages:** producing, publishing, promoting
 
 ---
 
-## ARCHITECTURE QUICK REFERENCE
+### EC2 Services Summary
 
-| Layer | Detail |
-|-------|--------|
-| Backend | Python/Flask, port 5050, `app.py` |
-| Frontend | Vanilla JS, `static/app.js` (~11k lines) |
-| Styles | `static/style.css` |
-| Data | JSON files in `data/`, atomic writes via `os.replace()` |
-| EC2 Sender | `http://13.218.60.13:5555` — scheduled WA delivery |
-| GOWA | `EC2_SENDER_URL` env var, device `GOWA_DEVICE_ID` |
+| Service | Location | Port | Status |
+|---------|----------|------|--------|
+| `indaba-app` | `/opt/indaba-app` | 5050 | ✅ running |
+| `indaba-discord` | `/opt/indaba-discord` | — | ⏸ waiting for DISCORD_BOT_TOKEN |
+| `indaba-sender` | `/opt/indaba-sender` | 5555 | ✅ running (existing) |
 
-## 5-MODE NAV
+Check all services: `sudo systemctl status indaba-app indaba-discord indaba-sender`
 
-| Mode | Purpose |
+---
+
+### Files Added
+
+| File | Purpose |
 |------|---------|
-| PANORAMA | Grid overview of all pipeline modules |
-| PRODUCING | Pipeline · Flash Fiction · Proverbs |
-| PUBLISHING | Website publishing workflow |
-| PROMOTING | Works (serializer) · Outbox (scheduler + EC2) |
-| PEOPLE | Contacts · Pipeline · Outreach · Dashboard |
+| `discord_bot/bot.py` | Main Discord bot |
+| `discord_bot/indaba_client.py` | HTTP wrapper for Indaba API |
+| `discord_bot/claude_agent.py` | Claude Haiku NLP parser |
+| `discord_bot/roadmap.py` | ROADMAP.md idea capture + git push |
+| `discord_bot/config.py` | Env var configuration |
+| `discord_bot/indaba-app.service` | Systemd service for EC2 Indaba |
+| `discord_bot/indaba-discord.service` | Systemd service for Discord bot |
+| `ROADMAP.md` | Idea capture file — appended by `!idea` |
+
+---
+
+### Data Sync (Mac ↔ EC2)
+
+Data lives in `data/` which is gitignored. Current approach:
+- Mac is dev, EC2 is ops — they may diverge over time
+- To push Mac data to EC2: `rsync -av --include='*.json' --exclude='*' data/ ubuntu@13.218.60.13:/opt/indaba-app/data/` (using the permanent key installed today)
+- To pull EC2 data to Mac: reverse the above
+- SSH key is now **permanent** — no more 60-second EC2 Instance Connect dance
+
+---
+
+### SSH Access (Updated)
+
+The EC2 SSH key is now permanent. Direct SSH works without Instance Connect:
+```bash
+ssh -i ~/Indaba/ec2-key.pem ubuntu@13.218.60.13
+```
+
+No more `aws ec2-instance-connect send-ssh-public-key` needed.
+
+---
+
+## 2026-04-17 — Chapter HTML Template Bug Fixes
+
+**File:** `services/chapter_html_template.py`
+
+### Bug 1 — Wrong callout class (`patreon-callout` → `support-callout`) ✅ FIXED
+
+**What happened:** The chapter template rendered a `<div class="patreon-callout">` block with a hardcoded Patreon link.
+
+**Why it was wrong:** `main.js` on realmsandroads.com looks for `.support-callout` and replaces its content dynamically based on the reader's membership tier. With the wrong class, JS never fired and readers saw a hardcoded Patreon link instead of the correct membership CTA.
+
+**Fix applied:** Replaced the block with:
+```html
+<div class="support-callout">
+  <h3>Enjoying the story?</h3>
+  <p>Support the creation of more stories — become a member and get early access to new chapters.</p>
+  <a href="/subscribe.html" class="btn btn-primary">Join Today ›</a>
+</div>
+```
+
+**Rule:** Never use `.patreon-callout` or reference `patreon.com` in any chapter template.
+
+---
+
+### Bug 2 — Unstripped markdown in chapter body ✅ FIXED
+
+**What happened:** Content fields containing standalone markdown bold lines (e.g. `**Glass Hearts**`) were passed verbatim into `<p>` tags. The site has no markdown renderer, so asterisks were displayed raw to readers.
+
+**Fix applied:** `prose_to_html()` now skips any paragraph that is a standalone markdown bold/italic line (regex: `^\*{1,3}.+\*{1,3}$`). These lines are chapter title echoes — the title is already rendered in the `<h1>` above the article.
+
+**Broader rule:** Content arriving at the publish endpoint should be plain prose. Any standalone `**title**` lines at the top of a content field are dropped before HTML rendering.
