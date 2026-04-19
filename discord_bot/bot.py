@@ -121,46 +121,37 @@ async def on_message(message):
         await _handle_natural_language(message)
 
 
-# ── Natural language dispatch ─────────────────────────────────────────────────
+# ── Natural language dispatch — full agentic loop ─────────────────────────────
 
 async def _handle_natural_language(message: discord.Message):
-    intent = await asyncio.to_thread(claude_agent.parse_intent, message.content)
-    action = intent.get("action", "unknown")
+    """
+    Route any non-! message through the Claude agent.
+    The agent has access to all Indaba tools and can chain multiple calls.
+    """
+    # Send a working indicator immediately so Fidel knows the bot is busy
+    status_msg = await message.channel.send("*Working…*")
+    steps = []
 
-    ctx_like = message  # We'll use message.channel.send directly
+    def on_progress(step_text: str):
+        steps.append(step_text)
 
-    async def reply(text: str):
-        await message.channel.send(_trunc(text))
+    try:
+        result = await asyncio.to_thread(
+            claude_agent.run_agent, message.content, on_progress
+        )
 
-    if action == "hub":
-        await _do_hub(reply)
-    elif action == "pipeline":
-        await _do_pipeline(reply, intent.get("book", ""), intent.get("stage", ""))
-    elif action == "pipeline_get":
-        await _do_pipeline_get(reply, intent.get("entry_id", ""))
-    elif action == "set_stage":
-        await _do_set_stage(reply, intent.get("entry_id", ""), intent.get("stage", ""))
-    elif action == "publish":
-        await _do_publish(reply, intent.get("entry_id", ""))
-    elif action == "deploy":
-        await _do_deploy(reply)
-    elif action == "deploy_status":
-        await _do_deploy_status(reply)
-    elif action == "work_sync":
-        await _do_work_sync(reply, intent.get("work_id", ""))
-    elif action == "works":
-        await _do_works(reply)
-    elif action == "status":
-        await _do_status(reply)
-    elif action == "idea":
-        await _do_idea(reply, intent.get("text", message.content))
-    elif action == "help":
-        await _do_help(reply)
-    elif action == "unknown":
-        reason = intent.get("reason", "")
-        if reason == "greeting":
-            await reply("Hey! I'm Indaba Bot. Type `!help` to see what I can do.")
-        # Otherwise silently ignore unrecognised messages
+        # Build final reply: steps taken + result
+        reply_parts = []
+        if steps:
+            reply_parts.append("**Steps taken:**\n" + "\n".join(steps))
+            reply_parts.append("")
+        reply_parts.append(result)
+        final = "\n".join(reply_parts)
+
+        await status_msg.edit(content=_trunc(final))
+
+    except Exception as e:
+        await status_msg.edit(content=f"Agent error: {e}")
 
 
 # ── Action implementations ────────────────────────────────────────────────────

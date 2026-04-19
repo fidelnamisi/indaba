@@ -112,6 +112,20 @@ def settings_get() -> dict:
     return _get("/api/settings")
 
 
+# ── Promo Broadcast ───────────────────────────────────────────────────────────
+
+def promo_broadcast_list() -> list:
+    return _get("/api/promo/proverbs")
+
+
+def promo_broadcast_generate(proverb_id: str) -> dict:
+    return _post("/api/promo/broadcast_post/generate", {"proverb_id": proverb_id})
+
+
+def promo_broadcast_queue(proverb_id: str, channel: str = "channel") -> dict:
+    return _post(f"/api/promo/broadcast_post/{proverb_id}/queue", {"channel": channel})
+
+
 # ── Flash Fiction ─────────────────────────────────────────────────────────────
 
 def flash_fiction_generate(params: dict) -> dict:
