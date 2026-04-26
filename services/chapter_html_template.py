@@ -83,7 +83,7 @@ def get_prev_next(entry, pipeline):
     book      = entry['book']
     n         = entry['chapter_number']
     same_book = sorted([e for e in pipeline if e['book'] == book],
-                       key=lambda e: e['chapter_number'])
+                       key=lambda e: e.get('chapter_number') or 0)
     prev_e = next((e for e in same_book if e['chapter_number'] == n - 1), None)
     next_e = next((e for e in same_book if e['chapter_number'] == n + 1), None)
     return prev_e, next_e
@@ -95,9 +95,20 @@ def escape_prose_char(text):
 
 
 def prose_to_html(prose):
-    """Convert plain prose (blank-line-separated paragraphs) to HTML <p> tags."""
+    """Convert plain prose to HTML <p> tags, preserving single-newline line breaks for dialogue."""
+    import re
     paras = [p.strip() for p in prose.strip().split('\n\n') if p.strip()]
-    return '\n'.join(f'      <p>{escape_prose_char(p)}</p>' for p in paras)
+    result = []
+    for p in paras:
+        # Drop standalone markdown bold/italic title lines (e.g. **Glass Hearts**)
+        # — the chapter title is already rendered in the <h1> above the article.
+        if re.match(r'^\*{1,3}.+\*{1,3}$', p):
+            continue
+        # Escape HTML chars first, then convert single newlines → <br> for dialogue lines
+        escaped = escape_prose_char(p)
+        escaped = escaped.replace('\n', '<br>\n      ')
+        result.append(f'      <p>{escaped}</p>')
+    return '\n'.join(result)
 
 
 def render_chapter_html(entry, prev_entry, next_entry):
@@ -150,6 +161,22 @@ def render_chapter_html(entry, prev_entry, next_entry):
         )
     else:
         header_image_block = ''
+
+    # Audio player block — guard against legacy dict format
+    _audio_raw = assets.get('audio', '')
+    audio_url  = (_audio_raw if isinstance(_audio_raw, str) else (_audio_raw or {}).get('s3_url', '') or '').strip()
+    if audio_url:
+        audio_block = (
+            '    <div class="chapter-audio" aria-label="Listen to this chapter">\n'
+            '      <div class="chapter-audio-label">🎧 Listen to this chapter</div>\n'
+            f'      <audio controls preload="none" style="width:100%;">\n'
+            f'        <source src="{_html.escape(audio_url)}" type="audio/mpeg">\n'
+            '        Your browser does not support audio playback.\n'
+            '      </audio>\n'
+            '    </div>\n\n'
+        )
+    else:
+        audio_block = ''
 
     # Author note block
     if author_note:
@@ -240,11 +267,12 @@ def render_chapter_html(entry, prev_entry, next_entry):
       <ul class="nav-links" id="nav-links" role="list">
         <li><a href="/">Home</a></li>
         <li><a href="/table-of-contents.html" class="active">Stories</a></li>
+        <li><a href="/listen.html">Listen</a></li>
         <li><a href="/start-here.html">New Readers</a></li>
         <li><a href="/search.html">Search</a></li>
         <li><a href="/about.html">About</a></li>
         <li><a href="/support.html">Support</a></li>
-        <li class="nav-cta"><a href="https://www.patreon.com/c/realmsandroads" target="_blank" rel="noopener" class="nav-external">Patreon</a></li>
+        <li class="nav-cta"><a href="/subscribe.html">Join</a></li>
       </ul>
       <div class="nav-controls">
         <button id="theme-toggle" class="btn-icon" aria-label="Toggle dark/light mode">&#127769;</button>
@@ -294,7 +322,7 @@ def render_chapter_html(entry, prev_entry, next_entry):
       <p style="font-family:var(--font-body);font-size:0.95rem;color:var(--text-muted-dark);line-height:1.7;">{blurb_esc}</p>
     </div>
 
-{author_note_block}    <article class="chapter-content" aria-label="Chapter text">
+{audio_block}{author_note_block}    <article class="chapter-content" aria-label="Chapter text">
 {prose_html}
     </article>
 
@@ -307,10 +335,10 @@ def render_chapter_html(entry, prev_entry, next_entry):
       <button class="reaction-btn" data-emoji="clap" aria-label="Applause reaction"><span class="emoji">&#128079;</span><span class="reaction-count">0</span></button>
     </div>
 
-    <div class="patreon-callout">
+    <div class="support-callout">
       <h3>Enjoying the story?</h3>
-      <p>Support Realms and Roads on Patreon to read upcoming chapters early &mdash; and help keep these worlds growing.</p>
-      <a href="https://www.patreon.com/c/realmsandroads" target="_blank" rel="noopener" class="btn btn-primary">Support on Patreon &rsaquo;</a>
+      <p>Support the creation of more stories &mdash; become a member and get early access to new chapters.</p>
+      <a href="/subscribe.html" class="btn btn-primary">Join Today &rsaquo;</a>
     </div>
 
 {nav_block_bottom}
@@ -368,5 +396,203 @@ def render_chapter_html(entry, prev_entry, next_entry):
 
   <script src="/js/rr-auth.js"></script>
   <script src="/js/chapter-gate.js"></script>
+</body>
+</html>'''
+
+
+def render_series_html(series, first_chapter_entry=None):
+    """
+    Generate a full static HTML page for a series landing page.
+    The chapter list is DATA-DRIVEN via JS fetching /data/chapters.json.
+
+    series: dict with keys name, slug, abbrev, genre, series_url, img_prefix,
+            synopsis (optional), tagline (optional).
+    first_chapter_entry: a content pipeline entry (may be None).
+    """
+    import html as _h
+
+    name     = series['name']
+    slug     = series['slug']
+    abbrev   = series['abbrev']
+    genre    = series['genre']
+    synopsis = series.get('synopsis', '')
+    tagline  = series.get('tagline', '')
+
+    name_esc     = _h.escape(name)
+    genre_esc    = _h.escape(genre)
+    synopsis_esc = _h.escape(synopsis, quote=False)
+    tagline_esc  = _h.escape(tagline, quote=False)
+
+    start_url    = f'/chapters/{slug}-chapter-1.html'
+    cover_img    = f'/img/{abbrev}-ch1-header.jpg'
+    canonical    = f'https://realmsandroads.com/series/{slug}.html'
+
+    # JS uses the series name directly (baked into the page)
+    series_name_js = name.replace("'", "\\'")
+
+    return f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{name_esc} &mdash; Realms and Roads</title>
+  <meta name="description" content="{synopsis_esc} Free to read online at Realms and Roads.">
+  <link rel="canonical" href="{canonical}">
+  <link rel="icon" href="/img/favicon.ico" type="image/x-icon">
+  <link rel="stylesheet" href="/css/style.css">
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-ZCKFL71BXY"></script>
+  <script>window.dataLayer=window.dataLayer||[];function gtag(){{dataLayer.push(arguments);}}gtag('js',new Date());gtag('config','G-ZCKFL71BXY');</script>
+  <link rel="alternate" type="application/rss+xml" title="Realms and Roads &mdash; New Chapters" href="/feed.xml">
+  <meta property="og:image" content="https://realmsandroads.com/img/og-banner.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+</head>
+<body>
+  <div id="reading-progress-bar" aria-hidden="true"></div>
+  <a href="#main-content" class="skip-link">Skip to content</a>
+
+  <nav class="site-nav" aria-label="Main navigation">
+    <div class="nav-inner">
+      <a href="/" class="nav-brand" aria-label="Realms and Roads">
+        <img src="/img/logo25.jpg" alt="Realms and Roads logo" class="nav-logo-mark" style="height:44px;width:auto;border-radius:50%;object-fit:cover;">
+        <div>
+          <div class="nav-site-name">Realms &amp; Roads</div>
+          <div class="nav-site-tagline">Many paths, endless stories</div>
+        </div>
+      </a>
+      <ul class="nav-links" id="nav-links" role="list">
+        <li><a href="/">Home</a></li>
+        <li><a href="/table-of-contents.html" class="active">Stories</a></li>
+        <li><a href="/listen.html">Listen</a></li>
+        <li><a href="/start-here.html">New Readers</a></li>
+        <li><a href="/search.html">Search</a></li>
+        <li><a href="/about.html">About</a></li>
+        <li><a href="/support.html">Support</a></li>
+        <li class="nav-cta"><a href="/subscribe.html">Join</a></li>
+      </ul>
+      <div class="nav-controls">
+        <button id="theme-toggle" class="btn-icon" aria-label="Toggle dark/light mode">&#127769;</button>
+        <button class="nav-hamburger" aria-label="Open navigation menu" aria-expanded="false" aria-controls="nav-links">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <header class="series-hero">
+    <div class="series-hero-inner">
+      <div class="series-cover-frame">
+        <img src="{cover_img}" alt="{name_esc} &mdash; series cover" style="width:100%;display:block;border-radius:6px;">
+      </div>
+      <div>
+        <div class="series-detail-genre">{genre_esc} &nbsp;&middot;&nbsp; Realms and Roads</div>
+        <h1 class="series-detail-title">{name_esc}</h1>
+        <div style="font-family:var(--font-body);font-style:italic;font-size:1.15rem;color:var(--ancestral-gold);margin-bottom:1.5rem;opacity:0.85;">{tagline_esc}</div>
+        <div class="series-detail-synopsis">
+          <p>{synopsis_esc}</p>
+        </div>
+        <div class="series-detail-ctas">
+          <a href="{start_url}" class="btn btn-primary">Start Reading &rsaquo;</a>
+          <a href="/table-of-contents.html" class="btn btn-ghost">All Stories</a>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main id="main-content" class="site-main">
+    <section style="margin-bottom:3rem;">
+      <div class="section-eyebrow" style="margin-bottom:0.75rem;">Chapters</div>
+      <h2 style="font-family:var(--font-heading);font-size:1.4rem;color:var(--text-on-dark);margin-bottom:0.5rem;font-weight:600;">Available Now</h2>
+      <p id="series-chapter-count" style="font-family:var(--font-ui);font-size:0.8rem;color:var(--text-muted-dark);margin-bottom:1.5rem;"></p>
+      <ol class="chapter-list" id="series-chapter-list" style="max-width:700px;" aria-label="{name_esc} chapters">
+        <li style="font-family:var(--font-ui);font-size:0.85rem;color:var(--text-muted-dark);padding:1rem 0;">Loading chapters&hellip;</li>
+      </ol>
+    </section>
+
+    <div class="support-callout" style="max-width:700px;">
+      <h3>Get Early Access</h3>
+      <p>Become a member to read upcoming chapters before they go public &mdash; and help keep these stories growing.</p>
+      <a href="/subscribe.html" class="btn btn-primary">Join Today &rsaquo;</a>
+    </div>
+  </main>
+
+  <footer class="site-footer" role="contentinfo">
+    <div class="footer-inner">
+      <div>
+        <span class="footer-brand-name">Realms &amp; Roads</span>
+        <p class="footer-brand-desc">Many roads. Endless worlds. Start anywhere.</p>
+        <div class="footer-social">
+          <a href="https://www.patreon.com/c/realmsandroads" target="_blank" rel="noopener" class="social-link">Patreon</a>
+        </div>
+      </div>
+      <div>
+        <div class="footer-col-heading">Stories</div>
+        <ul class="footer-links">
+          <li><a href="/series/outlaws-and-outcasts.html">Outlaws and Outcasts</a></li>
+          <li><a href="/series/rise-of-the-rain-queen.html">Rise of the Rain Queen</a></li>
+          <li><a href="/series/man-of-stone-and-shadow.html">Man of Stone and Shadow</a></li>
+          <li><a href="/series/love-back.html">Love Back</a></li>
+          <li><a href="/series/short-and-sweet.html">Short and Sweet</a></li>
+          <li><a href="/table-of-contents.html">All Chapters</a></li>
+        </ul>
+      </div>
+      <div>
+        <div class="footer-col-heading">Navigate</div>
+        <ul class="footer-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/start-here.html">New Readers</a></li>
+          <li><a href="/search.html">Search</a></li>
+          <li><a href="/about.html">About Fidel Namisi</a></li>
+          <li><a href="/support.html">Support</a></li>
+          <li><a href="/contact.html">Contact</a></li>
+          <li><a href="/terms.html">Terms &amp; Conditions</a></li>
+          <li><a href="/privacy.html">Privacy Policy</a></li>
+          <li><a href="/refund.html">Refund Policy</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>&copy; 2026 Realms and Roads. All rights reserved. Written by Fidel Namisi.</p>
+      <p>Hosted on <a href="https://firebase.google.com" target="_blank" rel="noopener">Firebase</a>.</p>
+    </div>
+  </footer>
+
+  <script src="/js/main.js"></script>
+  <script src="/js/rr-auth.js"></script>
+  <script src="/js/auth-state.js"></script>
+  <script src="/js/header-nav.js"></script>
+  <script>
+  (function() {{
+    var SERIES_NAME = '{series_name_js}';
+    fetch('/data/chapters.json')
+      .then(function(r) {{ return r.json(); }})
+      .then(function(chapters) {{
+        var filtered = chapters.filter(function(c) {{ return c.series === SERIES_NAME; }});
+        var list = document.getElementById('series-chapter-list');
+        var countEl = document.getElementById('series-chapter-count');
+        if (!filtered.length) {{
+          list.innerHTML = '<li style="font-family:var(--font-ui);font-size:0.85rem;color:var(--text-muted-dark);padding:1rem 0;">Coming soon</li>';
+          return;
+        }}
+        countEl.textContent = filtered.length + ' chapter' + (filtered.length === 1 ? '' : 's') + ' available';
+        var html = '';
+        filtered.forEach(function(c, i) {{
+          var num = c.chapter ? c.chapter.replace('Chapter ', '') : String(i + 1);
+          var title = c.title || c.chapter || ('Chapter ' + (i + 1));
+          var url = c.url || '#';
+          html += '<li class="chapter-list-item"><a href="' + url + '" rel="chapter">';
+          html += '<span class="ch-num">Ch. ' + num + '</span>';
+          html += '<span class="ch-title">' + title + '</span>';
+          html += '<span class="ch-meta">2026 &middot; Free</span>';
+          html += '</a></li>';
+        }});
+        list.innerHTML = html;
+      }})
+      .catch(function() {{
+        var list = document.getElementById('series-chapter-list');
+        list.innerHTML = '<li style="font-family:var(--font-ui);font-size:0.85rem;color:var(--text-muted-dark);padding:1rem 0;">Coming soon</li>';
+      }});
+  }})();
+  </script>
 </body>
 </html>'''

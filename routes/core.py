@@ -141,11 +141,17 @@ def api_pipeline_overview():
     STAGES      = ['producing', 'publishing', 'promoting']
 
     def count_by_type(stage):
+        """Count distinct Works (not modules) that have at least one module in this stage."""
         breakdown = {wt: 0 for wt in WORK_TYPES}
+        seen = set()  # (work_id, work_type) pairs already counted
         for e in pipeline:
             if e.get('workflow_stage') == stage:
                 wt = e.get('work_type', 'Book')
-                breakdown[wt] = breakdown.get(wt, 0) + 1
+                work_id = e.get('book', '') or e.get('id', '')
+                key = (work_id, wt)
+                if key not in seen:
+                    seen.add(key)
+                    breakdown[wt] = breakdown.get(wt, 0) + 1
         total = sum(breakdown.values())
         return {'total': total, 'breakdown': breakdown}
 
@@ -154,11 +160,12 @@ def api_pipeline_overview():
     # Modules list for drill-down
     modules = [
         {
-            'id':         e.get('id'),
-            'title':      e.get('chapter', ''),
-            'work_name':  e.get('book', ''),
-            'work_type':  e.get('work_type', 'Book'),
+            'id':             e.get('id'),
+            'title':          e.get('chapter', ''),
+            'work_name':      e.get('book', ''),
+            'work_type':      e.get('work_type', 'Book'),
             'workflow_stage': e.get('workflow_stage', 'producing'),
+            'chapter_number': e.get('chapter_number'),
         }
         for e in pipeline
     ]

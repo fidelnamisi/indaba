@@ -54,6 +54,13 @@ const state = {
   scrivengsData:     null,   // {work_title, modules}
   entities:          [],   // entity model
   entityTypeFilter:  'all',
+  currentProducingTab: 'pipeline',
+  panoramaEntries:     [],
+  panoramaFilter:      'all',   // 'all' | 'producing' | 'publishing' | 'promoting'
+  promotingEntries:    [],
+  peopleContacts:      [],
+  peopleLeads:         [],
+  peopleMessages:      [],
 };
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -62,7 +69,14 @@ async function api(method, path, body) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(path, opts);
-  if (!res.ok) throw new Error(`API ${method} ${path} → ${res.status}`);
+  if (!res.ok) {
+    let msg = `API ${method} ${path} → ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j.error) msg = j.error;
+    } catch (_) {}
+    throw new Error(msg);
+  }
   return res.json();
 }
 const GET  = p      => api('GET',    p);
@@ -110,21 +124,30 @@ async function switchMode(mode, pushState = true) {
   });
 
   // Load relevant data for the mode
-  if (mode === 'producing') {
+  if (mode === 'panorama') {
+    await loadPanorama();
+  } else if (mode === 'producing') {
     await loadProducing();
   } else if (mode === 'publishing') {
     await loadPublishing();
   } else if (mode === 'promoting') {
-    // Default to broadcast-posts; avoid command-center (replaced by Producing/Publishing)
+    // Default to works tab
     if (!state.currentPromoTab ||
-        state.currentPromoTab === 'command-center' ||
-        state.currentPromoTab === 'promo-settings') {
-      state.currentPromoTab = 'broadcast-posts';
+        ['command-center', 'promo-settings', 'broadcast-posts',
+         'message-maker', 'contacts', 'leads', 'book-serializer'].includes(state.currentPromoTab)) {
+      state.currentPromoTab = 'works';
     }
     await switchPromoTab(state.currentPromoTab);
+  } else if (mode === 'people') {
+    await loadPeople();
   }
 
   closeModal();
+  // Remove any orphaned body-appended panels from old code
+  ['crm-contact-panel', 'crm-add-contact-modal', 'crm-add-lead-modal'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.remove();
+  });
 }
 
 /**
@@ -168,27 +191,50 @@ async function switchPromoTab(tabName) {
   
   // Load data based on sub-tab
   try {
-    if (tabName === 'command-center')   await loadCommandCenter();
-    else if (tabName === 'contacts')   await loadPromoContacts();
-    else if (tabName === 'leads')      await loadPromoLeads();
-    else if (tabName === 'message-maker') await renderPromoMessageMaker();
+    if      (tabName === 'works')           await loadPromotingWorks();
+    else if (tabName === 'sender')          { renderPromoSender(); }
+    // Legacy tabs kept for compatibility
+    else if (tabName === 'command-center')  await loadCommandCenter();
+    else if (tabName === 'contacts')        await loadPromoContacts();
+    else if (tabName === 'leads')           await loadPromoLeads();
+    else if (tabName === 'message-maker')   await renderPromoMessageMaker();
     else if (tabName === 'book-serializer') await loadPromoWorks();
     else if (tabName === 'broadcast-posts') await loadBroadcastPostQueue();
-    else if (tabName === 'sender')      { state.currentMessageFilter = 'queued'; await loadPromoMessages(); startOutboxPolling(); }
-    else if (tabName === 'promo-settings') await loadPromoSettings();
+    else if (tabName === 'promo-settings')  await loadPromoSettings();
   } catch (e) {
     console.error(`Failed to load ${tabName}:`, e);
     toast(`Failed to load ${tabName}`, 'error');
   }
 }
 
+// ── Producing Sub-Tab Switcher ────────────────────────────────────────────────
+
+function switchProducingTab(tab) {
+  state.currentProducingTab = tab;
+  document.querySelectorAll('.producing-subtab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.producingTab === tab);
+  });
+  const tabs = {
+    'pipeline':      document.getElementById('producing-tab-pipeline'),
+    'flash-fiction': document.getElementById('producing-tab-flash-fiction'),
+    'proverbs':      document.getElementById('producing-tab-proverbs'),
+  };
+  Object.entries(tabs).forEach(([key, el]) => {
+    if (el) el.style.display = key === tab ? '' : 'none';
+  });
+  if (tab === 'flash-fiction') renderFlashFiction();
+  if (tab === 'proverbs')      loadBroadcastPostQueue();
+}
+
 // ── Routing Handler ───────────────────────────────────────────────────────────
 
 function handleRoute() {
   const path = window.location.pathname;
-  if (path === '/publishing')  switchMode('publishing',  false);
-  else if (path === '/promoting') switchMode('promoting', false);
-  else switchMode('producing', false); // Default (/producing or /)
+  if      (path === '/producing')  switchMode('producing',  false);
+  else if (path === '/publishing') switchMode('publishing', false);
+  else if (path === '/promoting')  switchMode('promoting',  false);
+  else if (path === '/people')     switchMode('people',     false);
+  else                             switchMode('panorama',   false); // Default (/ or /panorama)
 }
 
 window.onpopstate = () => handleRoute();
@@ -229,8 +275,13 @@ function updateClock() {
 const pipelineState = {
   filter:        'All',   // 'All' | 'Book' | 'Podcast' | 'Campaign' | 'Event'
   activeStage:   'producing',
-  overviewData:  null,    // cached API response
+  overviewData:  null,    // cached /api/pipeline/overview response
+  catalogWorks:  null,    // cached /api/catalog-works response — source of truth for Works
 };
+
+// work_type → filter label mapping
+// CRM-relevant work types (show Contacts & Leads in Promoting panel)
+const CRM_WORK_TYPES = ['Fundraising Campaign', 'Retreat (Event)', 'Subscription'];
 
 // work_type → filter label mapping
 const WT_FILTER_MAP = {
@@ -238,21 +289,23 @@ const WT_FILTER_MAP = {
   'Podcast':              'Podcast',
   'Fundraising Campaign': 'Campaign',
   'Retreat (Event)':      'Event',
+  'Subscription':         'Subscription',
 };
 const FILTER_WT_MAP = {
   'Book':     'Book',
   'Podcast':  'Podcast',
-  'Campaign': 'Fundraising Campaign',
-  'Event':    'Retreat (Event)',
+  'Campaign':     'Fundraising Campaign',
+  'Event':        'Retreat (Event)',
+  'Subscription': 'Subscription',
 };
 
 // Work-type colour helpers
 function wtBadgeClass(workType) {
-  const m = { 'Book': 'book', 'Podcast': 'podcast', 'Fundraising Campaign': 'campaign', 'Retreat (Event)': 'event' };
+  const m = { 'Book': 'book', 'Podcast': 'podcast', 'Fundraising Campaign': 'campaign', 'Retreat (Event)': 'event', 'Subscription': 'subscription' };
   return 'wt-badge wt-badge-' + (m[workType] || 'book');
 }
 function wtBarClass(workType) {
-  const m = { 'Book': 'wt-book', 'Podcast': 'wt-podcast', 'Fundraising Campaign': 'wt-campaign', 'Retreat (Event)': 'wt-event' };
+  const m = { 'Book': 'wt-book', 'Podcast': 'wt-podcast', 'Fundraising Campaign': 'wt-campaign', 'Retreat (Event)': 'wt-event', 'Subscription': 'wt-subscription' };
   return m[workType] || 'wt-book';
 }
 function wtLabel(workType) {
@@ -263,10 +316,21 @@ function wtLabel(workType) {
 async function loadPipeline() { return loadProducing(); }
 
 async function loadProducing() {
+  // Restore the active sub-tab visibility
+  switchProducingTab(state.currentProducingTab || 'pipeline');
+
+  if ((state.currentProducingTab || 'pipeline') !== 'pipeline') return;
+
   const container = document.getElementById('producing-container');
   if (!container) return;
   try {
-    pipelineState.overviewData = await GET('/api/pipeline/overview');
+    // Fetch both sources in parallel — catalog is the source of truth for Works
+    const [overview, catalog] = await Promise.all([
+      GET('/api/pipeline/overview'),
+      GET('/api/catalog-works'),
+    ]);
+    pipelineState.overviewData = overview;
+    pipelineState.catalogWorks = catalog.works || [];
     renderPipelineOverview(container);
   } catch (e) {
     container.innerHTML = `<div class="stub-placeholder">Failed to load: ${e.message}</div>`;
@@ -290,21 +354,30 @@ function renderPipelineOverview(container) {
   `).join('');
 
   // Stage cards
+  const WORK_TYPES = ['Book', 'Podcast', 'Fundraising Campaign', 'Retreat (Event)', 'Subscription'];
+  const activeFilter = pipelineState.filter;
   const cardsHtml = stages.map(s => {
     const c = counts[s.key] || { total: 0, breakdown: {} };
-    const total = c.total;
     const breakdown = c.breakdown;
-    const WORK_TYPES = ['Book', 'Podcast', 'Fundraising Campaign', 'Retreat (Event)'];
 
-    // Breakdown text
-    const parts = WORK_TYPES
-      .filter(wt => (breakdown[wt] || 0) > 0)
-      .map(wt => `${breakdown[wt]} ${wtLabel(wt).toLowerCase()}`);
+    // When a type filter is active, card shows only that type's count
+    let total, parts, barTypes;
+    if (activeFilter !== 'All' && FILTER_WT_MAP[activeFilter]) {
+      const targetWt = FILTER_WT_MAP[activeFilter];
+      total    = breakdown[targetWt] || 0;
+      parts    = total > 0 ? [`${total} ${activeFilter.toLowerCase()} work${total !== 1 ? 's' : ''}`] : [];
+      barTypes = [targetWt];
+    } else {
+      total    = c.total;
+      parts    = WORK_TYPES.filter(wt => (breakdown[wt] || 0) > 0)
+                            .map(wt => `${breakdown[wt]} ${wtLabel(wt).toLowerCase()}`);
+      barTypes = WORK_TYPES;
+    }
     const breakdownText = parts.length ? parts.join(' · ') : '—';
 
     // Proportional colour bar
     const barSegments = total > 0
-      ? WORK_TYPES.filter(wt => (breakdown[wt] || 0) > 0).map(wt => {
+      ? barTypes.filter(wt => (breakdown[wt] || 0) > 0).map(wt => {
           const pct = ((breakdown[wt] / total) * 100).toFixed(1);
           return `<div class="pipeline-stage-bar-segment ${wtBarClass(wt)}" style="width:${pct}%"></div>`;
         }).join('')
@@ -326,38 +399,138 @@ function renderPipelineOverview(container) {
 
   container.innerHTML = `
     <div style="max-width:1100px; margin:0 auto;">
-      <div class="pipeline-filter-bar">${filterHtml}</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+        <div class="pipeline-filter-bar" style="margin-bottom:0;">${filterHtml}</div>
+        <button class="pipeline-open-btn" style="border-color:var(--accent);color:var(--accent);font-size:12px;padding:8px 16px;flex-shrink:0;"
+                onclick="openNewWorkModal()">+ New Work</button>
+      </div>
       <div class="pipeline-stage-cards">${cardsHtml}</div>
       <div id="pipeline-drilldown">${drillHtml}</div>
     </div>`;
 }
 
+// Publishing screen filter state
+let publishingFilter = 'All';
+
+// Track which Work rows are expanded in the Producing drill-down
+const _expandedProducingWorks = new Set();
+
+function toggleProducingWorkExpand(workId) {
+  if (_expandedProducingWorks.has(workId)) {
+    _expandedProducingWorks.delete(workId);
+  } else {
+    _expandedProducingWorks.add(workId);
+  }
+  const container = document.getElementById('producing-container');
+  if (container) renderPipelineOverview(container);
+}
+
 function renderPipelineDrilldown(allModules) {
   const stage  = pipelineState.activeStage;
   const filter = pipelineState.filter;
-
-  let modules = allModules.filter(m => m.workflow_stage === stage);
-  if (filter !== 'All') {
-    const targetWt = FILTER_WT_MAP[filter];
-    if (targetWt) modules = modules.filter(m => m.work_type === targetWt);
-  }
-
   const stageLabel = { producing: 'Producing', publishing: 'Publishing', promoting: 'Promoting' }[stage];
 
-  if (!modules.length) {
-    return `<div class="pipeline-drilldown-header">Modules — ${stageLabel}</div>
-            <div class="pipeline-drilldown-empty">No modules in ${stageLabel}${filter !== 'All' ? ` (${filter})` : ''}.</div>`;
+  // Build a module lookup by work ID (book code) for the active stage
+  // allModules comes from /api/pipeline/overview but we rebuild from catalog for consistency
+  const modulesByWork = {};
+  allModules.forEach(m => {
+    const key = m.work_name || '';
+    if (!modulesByWork[key]) modulesByWork[key] = [];
+    modulesByWork[key].push(m);
+  });
+
+  // Use catalog as source of truth for Works — same as Publishing screen
+  let works = pipelineState.catalogWorks || [];
+  if (filter !== 'All') {
+    const targetWt = FILTER_WT_MAP[filter];
+    if (targetWt) works = works.filter(w => w.work_type === targetWt);
   }
 
-  const rows = modules.map(m => `
-    <div class="pipeline-module-row">
-      <span class="${wtBadgeClass(m.work_type)}">${wtLabel(m.work_type)}</span>
-      <span class="pipeline-module-title">${m.title}</span>
-      <span class="pipeline-module-work">${m.work_name}</span>
-      <button class="pipeline-open-btn" onclick="openModuleDetail('${m.id}')">Open</button>
-    </div>`).join('');
+  if (!works.length) {
+    return `<div class="pipeline-drilldown-header">Works</div>
+            <div class="pipeline-drilldown-empty">No works${filter !== 'All' ? ` of type "${filter}"` : ''}. Create one above.</div>`;
+  }
 
-  return `<div class="pipeline-drilldown-header">Modules — ${stageLabel} (${modules.length})</div>${rows}`;
+  // Sort: Books first, then by title
+  const WORK_TYPE_ORDER = ['Book', 'Podcast', 'Fundraising Campaign', 'Retreat (Event)', 'Subscription'];
+  works = [...works].sort((a, b) => {
+    const ai = WORK_TYPE_ORDER.indexOf(a.work_type);
+    const bi = WORK_TYPE_ORDER.indexOf(b.work_type);
+    return ai - bi || a.title.localeCompare(b.title);
+  });
+
+  const groupRows = works.map(w => {
+    const workId   = w.id;
+    const isExpanded = _expandedProducingWorks.has(workId);
+    const wtL = wtLabel(w.work_type);
+    const encodedId = encodeURIComponent(workId);
+    const encodedType = encodeURIComponent(w.work_type);
+
+    // Modules for this work in the active stage
+    const stageModules = (modulesByWork[workId] || [])
+      .filter(m => m.workflow_stage === stage)
+      .sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0));
+    const stageCount = stageModules.length;
+
+    // Subscription works are CRM constructs — no modules
+    const isSubscription = w.work_type === 'Subscription';
+
+    const header = `
+      <div class="works-row-header" onclick="${isSubscription ? '' : `toggleProducingWorkExpand('${workId.replace(/'/g, "\\'")}')` }">
+        <span class="${wtBadgeClass(w.work_type)}">${wtL}</span>
+        <span class="works-row-title">${w.title}</span>
+        ${isSubscription
+          ? `<span class="works-row-count" style="color:var(--muted);font-style:italic;">CRM product</span>`
+          : `<span class="works-row-count">${stageCount} in ${stageLabel}</span>`}
+        <div style="display:flex;align-items:center;gap:6px;margin-left:auto;">
+          ${isSubscription ? '' : `
+          <button class="pipeline-open-btn" style="font-size:11px;padding:3px 10px;"
+                  onclick="event.stopPropagation();openAddModuleModal('${encodedId}','${encodedType}')">+ Module</button>`}
+          <button class="pipeline-open-btn" style="font-size:11px;padding:3px 10px;color:var(--muted);border-color:var(--muted);"
+                  onclick="event.stopPropagation();confirmDeleteWork('${encodedId}')">Delete</button>
+          ${isSubscription ? '' : `<span class="works-row-expand">${isExpanded ? '▲' : '▼'}</span>`}
+        </div>
+      </div>`;
+
+    let modulesHtml = '';
+    if (isSubscription && isExpanded) {
+      // Show CRM info instead of modules
+      modulesHtml = `<div class="works-modules-list">
+        <div style="padding:12px 16px;color:var(--muted);font-size:13px;line-height:1.6;">
+          Subscription works do not have modules. They are managed as CRM products via the
+          <strong>People → Pipeline</strong> tab.
+          ${w.price ? `<span style="margin-left:8px;font-weight:600;color:var(--text);">R${w.price}/month</span>` : ''}
+        </div>
+      </div>`;
+    } else if (!isSubscription && isExpanded) {
+      const rows = stageModules.map(m => `
+        <div class="works-module-row">
+          <span class="works-module-num">${m.chapter_number ? String(m.chapter_number).padStart(2,'0') : '—'}</span>
+          <span class="works-module-title">${m.title}</span>
+          <button class="pipeline-open-btn" style="font-size:11px;padding:3px 10px;"
+                  onclick="openModuleDetail('${m.id}')">Open</button>
+          <button class="pipeline-open-btn" style="font-size:11px;padding:3px 8px;color:var(--muted);border-color:var(--muted);"
+                  onclick="confirmDeleteModule('${m.id}')">✕</button>
+        </div>`).join('');
+
+      const emptyMsg = stageCount === 0
+        ? `<div style="color:var(--muted);font-size:13px;padding:10px 16px;">No modules in ${stageLabel} yet.</div>`
+        : '';
+
+      modulesHtml = `<div class="works-modules-list">
+        ${rows}${emptyMsg}
+        <div style="padding:6px 16px 10px;">
+          <button class="pipeline-open-btn" style="font-size:11px;padding:4px 14px;border-color:var(--accent);color:var(--accent);"
+                  onclick="openAddModuleModal('${encodedId}','${encodedType}')">+ Add Module</button>
+        </div>
+      </div>`;
+    }
+
+    return `<div class="works-row">${header}${modulesHtml}</div>`;
+  }).join('');
+
+  const totalInStage = allModules.filter(m => m.workflow_stage === stage).length;
+  return `<div class="pipeline-drilldown-header">Works (${works.length}) · ${totalInStage} module${totalInStage !== 1 ? 's' : ''} in ${stageLabel}</div>${groupRows}`;
 }
 
 function setPipelineFilter(filter) {
@@ -393,42 +566,69 @@ async function loadPublishing() {
 // Track which Work rows are expanded
 const _expandedWorks = new Set();
 
+function setPublishingFilter(f) {
+  publishingFilter = f;
+  loadPublishing();
+}
+
 function renderPublishingScreen(container, works) {
+  const filters = ['All', 'Book', 'Podcast', 'Campaign', 'Event'];
+  const filterBar = `
+    <div class="pipeline-filter-bar" style="margin-bottom:12px;">
+      ${filters.map(f => `<button class="pipeline-filter-btn${f === publishingFilter ? ' active' : ''}" onclick="setPublishingFilter('${f}')">${f}</button>`).join('')}
+    </div>`;
+
   const topBar = `
-    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:24px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
       <h2 style="font-size:18px; font-weight:700;">Works</h2>
       <button class="pipeline-open-btn" style="border-color:var(--accent); color:var(--accent); font-size:12px; padding:8px 16px;"
               onclick="openNewWorkModal()">+ New Work</button>
     </div>`;
 
   if (!works || !works.length) {
-    container.innerHTML = topBar + '<div class="stub-placeholder">No works yet. Create your first work above.</div>';
+    container.innerHTML = filterBar + topBar + '<div class="stub-placeholder">No works yet. Create your first work above.</div>';
     return;
   }
 
-  const WORK_TYPE_ORDER = ['Book', 'Podcast', 'Fundraising Campaign', 'Retreat (Event)'];
-  const sorted = [...works].sort((a, b) => {
+  const WORK_TYPE_ORDER = ['Book', 'Podcast', 'Fundraising Campaign', 'Retreat (Event)', 'Subscription'];
+  let filtered = [...works];
+  if (publishingFilter !== 'All') {
+    const targetWt = FILTER_WT_MAP[publishingFilter];
+    if (targetWt) filtered = filtered.filter(w => w.work_type === targetWt);
+  }
+  const sorted = filtered.sort((a, b) => {
     const ai = WORK_TYPE_ORDER.indexOf(a.work_type);
     const bi = WORK_TYPE_ORDER.indexOf(b.work_type);
     return ai - bi || a.title.localeCompare(b.title);
   });
 
-  const rowsHtml = sorted.map(work => renderWorkRow(work)).join('');
-  container.innerHTML = topBar + `<div id="works-list" style="max-width:960px; margin:0 auto;">${rowsHtml}</div>`;
+  const rowsHtml = sorted.length
+    ? sorted.map(work => renderWorkRow(work)).join('')
+    : `<div class="pipeline-drilldown-empty">No works of type "${publishingFilter}".</div>`;
+  container.innerHTML = filterBar + topBar + `<div id="works-list" style="max-width:960px; margin:0 auto;">${rowsHtml}</div>`;
 }
+
+const _expandedWebSync = new Set();
 
 function renderWorkRow(work) {
   const isBook      = work.work_type === 'Book';
   const isExpanded  = _expandedWorks.has(work.id);
+  const isSyncOpen  = _expandedWebSync.has(work.id);
   const moduleCount = (work.modules || []).length;
   const readyCount  = (work.modules || []).filter(m => m.has_prose).length;
   const wtLabel2    = work.work_type === 'Fundraising Campaign' ? 'Campaign' :
                       work.work_type === 'Retreat (Event)'       ? 'Event' : work.work_type;
 
   const bulkBtn = isBook && readyCount > 0 ? `
-    <button class="pipeline-open-btn" style="font-size:11px; padding:4px 12px; margin-right:6px;"
+    <button class="pipeline-open-btn" style="font-size:11px; padding:4px 12px;"
             onclick="event.stopPropagation(); openBulkPublishModal('${work.id}')">
       Publish All
+    </button>` : '';
+
+  const websiteBtn = isBook ? `
+    <button class="pipeline-open-btn" style="font-size:11px; padding:4px 12px; border-color:var(--accent); color:var(--accent);"
+            onclick="event.stopPropagation(); toggleWebSync('${work.id}')">
+      ${isSyncOpen ? 'Hide Website' : 'Website Sync'}
     </button>` : '';
 
   const expandIcon = isExpanded ? '▲' : '▼';
@@ -438,7 +638,7 @@ function renderWorkRow(work) {
       <span class="works-row-title">${work.title}</span>
       <span class="works-row-count">${moduleCount} module${moduleCount !== 1 ? 's' : ''}</span>
       <div style="display:flex; align-items:center; gap:6px; margin-left:auto;">
-        ${bulkBtn}
+        ${websiteBtn}${bulkBtn}
         <span class="works-row-expand">${expandIcon}</span>
       </div>
     </div>`;
@@ -463,7 +663,87 @@ function renderWorkRow(work) {
     modulesHtml = `<div class="works-modules-list"><div style="color:var(--muted); font-size:13px; padding:10px 16px;">No modules yet.</div></div>`;
   }
 
-  return `<div class="works-row" id="work-row-${work.id}">${header}${modulesHtml}</div>`;
+  const syncPanel = isSyncOpen
+    ? `<div id="web-sync-${work.id}" style="border-top:1px solid var(--border); padding:12px 16px; background:var(--bg2);">
+         <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); margin-bottom:8px;">Website Sync — realmsandroads.com</div>
+         <div id="web-sync-body-${work.id}" style="font-size:13px; color:var(--muted);">Loading…</div>
+       </div>`
+    : '';
+
+  return `<div class="works-row" id="work-row-${work.id}">${header}${modulesHtml}${syncPanel}</div>`;
+}
+
+async function toggleWebSync(workId) {
+  if (_expandedWebSync.has(workId)) {
+    _expandedWebSync.delete(workId);
+    loadPublishing();
+    return;
+  }
+  _expandedWebSync.add(workId);
+  loadPublishing();
+  // Load sync data
+  try {
+    const data = await GET(`/api/website/work-sync/${encodeURIComponent(workId)}`);
+    renderWebSyncPanel(workId, data);
+  } catch (e) {
+    const el = document.getElementById(`web-sync-body-${workId}`);
+    if (el) el.innerHTML = `<span style="color:var(--danger);">Error: ${e.message}</span>`;
+  }
+}
+
+function renderWebSyncPanel(workId, data) {
+  const el = document.getElementById(`web-sync-body-${workId}`);
+  if (!el) return;
+  if (!data.website_configured) {
+    el.innerHTML = `<span style="color:var(--muted);">Website directory not configured. Set it in Settings → Website.</span>`;
+    return;
+  }
+  if (!data.chapters || !data.chapters.length) {
+    el.innerHTML = `<span style="color:var(--muted);">No chapters found for this work.</span>`;
+    return;
+  }
+
+  const STATUS_CONFIG = {
+    synced:        { label: 'Published ✓',       color: 'var(--success)' },
+    not_published: { label: 'Not Published',      color: 'var(--muted)'   },
+    web_only:      { label: 'Web Only',           color: 'var(--accent)'  },
+    web_newer:     { label: 'Website is Newer',   color: 'var(--warning, #f59e0b)' },
+  };
+
+  const rows = data.chapters.map(ch => {
+    const cfg    = STATUS_CONFIG[ch.status] || { label: ch.status, color: 'var(--muted)' };
+    const pubDate = ch.published_at
+      ? new Date(ch.published_at).toLocaleDateString('en-ZA', { day:'numeric', month:'short', year:'numeric' })
+      : '';
+    const viewLink = ch.on_website && ch.chapter_url
+      ? `<a href="https://www.realmsandroads.com${ch.chapter_url}" target="_blank"
+            style="font-size:11px; color:var(--accent); text-decoration:none; margin-left:8px;">View ↗</a>`
+      : '';
+    const publishBtn = ch.entry_id && ch.status !== 'synced'
+      ? `<button class="pipeline-open-btn" style="font-size:11px; padding:3px 10px; margin-left:8px;"
+                onclick="publishChapterToWebsite('${ch.entry_id}')">
+           ${ch.status === 'not_published' ? 'Publish' : 'Update'}
+         </button>`
+      : ch.entry_id
+        ? `<button class="pipeline-open-btn" style="font-size:11px; padding:3px 10px; margin-left:8px;"
+                onclick="publishChapterToWebsite('${ch.entry_id}')">Re-publish</button>`
+        : '';
+    const openBtn = ch.entry_id
+      ? `<button class="pipeline-open-btn" style="font-size:11px; padding:3px 10px; margin-left:4px;"
+              onclick="openModuleDetail('${ch.entry_id}')">Open</button>`
+      : '';
+
+    return `
+      <div style="display:flex; align-items:center; gap:8px; padding:5px 0; border-bottom:1px solid var(--border);">
+        <span style="min-width:28px; font-size:12px; color:var(--muted); text-align:right;">${ch.chapter_number || '—'}</span>
+        <span style="flex:1; font-size:13px;">${ch.title || ch.chapter_id}</span>
+        <span style="font-size:12px; color:${cfg.color};">${cfg.label}</span>
+        ${pubDate ? `<span style="font-size:11px; color:var(--muted);">${pubDate}</span>` : ''}
+        ${viewLink}${publishBtn}${openBtn}
+      </div>`;
+  }).join('');
+
+  el.innerHTML = rows;
 }
 
 function toggleWorkExpand(workId) {
@@ -560,7 +840,7 @@ function renderModuleDetail(container) {
   const panelHtml = renderModuleDetailPanel(m, stage);
 
   const workType   = m.work_type || 'Book';
-  const workName   = m.book || '';
+  const workName   = pipelineState.catalogWorks?.find(w => w.id === m.book)?.title || m.book || '';
   const stageLabel = { producing: 'Producing', publishing: 'Publishing', promoting: 'Promoting' }[m.workflow_stage] || m.workflow_stage;
   const backLabel  = moduleDetailState.originMode === 'publishing' ? 'Publishing' : 'Producing';
   const backFn     = moduleDetailState.originMode === 'publishing' ? 'loadPublishing' : 'loadProducing';
@@ -575,6 +855,11 @@ function renderModuleDetail(container) {
       <div class="module-detail-meta">
         <span class="${wtBadgeClass(workType)}" style="margin-right:8px">${wtLabel(workType)}</span>
         ${workName} · ${stageLabel}
+        <span style="margin-left:12px;color:var(--muted);">Ch.&nbsp;<input type="number" min="1"
+          value="${m.chapter_number || ''}" placeholder="—"
+          style="width:52px;padding:1px 4px;font-size:13px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);color:var(--fg);"
+          title="Chapter number"
+          onchange="saveChapterNumber('${m.id}', this.value)"></span>
       </div>
       <div class="module-stage-bar">${stageBarHtml}</div>
       <div id="module-detail-panel" class="module-detail-panel">${panelHtml}</div>
@@ -599,6 +884,7 @@ function renderProducingPanel(m) {
     'Podcast':              'Audio Recording',
     'Fundraising Campaign': 'Campaign Narrative',
     'Retreat (Event)':      'Event Offer Write-up',
+    'Subscription':         'Edition Content',
   }[m.work_type] || 'Essential Asset';
 
   const eaRow = `
@@ -627,6 +913,8 @@ function renderProducingPanel(m) {
     <div class="module-asset-section-title">Supporting Assets</div>
     ${saRows || '<div style="color:var(--muted);font-size:13px;padding:8px 0;">No supporting assets defined.</div>'}
     <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      ${eaDone ? `<button class="module-asset-action" onclick="showBulkGenerateModal('${m.id}')"
+                         style="border-color:var(--p3);color:var(--p3);">✦ Generate All Assets</button>` : ''}
       <button class="module-asset-action" onclick="moveModuleToStage('${m.id}', 'publishing')" style="border-color:var(--accent)">→ Move to Publishing</button>
     </div>`;
 }
@@ -674,12 +962,16 @@ function renderPublishingPanel(m) {
         <span class="module-platform-name" style="font-weight:600;">realmsandroads.com</span>
         ${isLive
           ? `<span class="module-platform-status published">Published ✓  ${pubDate}</span>
-             ${chUrl ? `<a href="https://www.realmsandroads.com${chUrl}" target="_blank" class="module-platform-mark-btn" style="text-decoration:none;">View Post ↗</a>` : ''}`
+             ${chUrl ? `<a href="https://www.realmsandroads.com${chUrl}" target="_blank" class="module-platform-mark-btn" style="text-decoration:none;">View Post ↗</a>` : ''}
+             <button class="module-platform-mark-btn" onclick="publishChapterToWebsite('${m.id}')">Re-publish</button>
+             <button class="module-platform-mark-btn" style="color:var(--danger);border-color:var(--danger);"
+                     onclick="unpublishChapter('${m.id}')">Unpublish</button>`
           : `<span class="module-platform-status">Not Published</span>
              <button class="module-platform-mark-btn" style="background:var(--accent); color:var(--bg); border-color:var(--accent); font-weight:700;"
                      onclick="publishChapterToWebsite('${m.id}')">Publish Now</button>`
         }
-      </div>`;
+      </div>
+      <div id="deploy-status-row" style="padding:6px 0 0;font-size:12px;color:var(--muted);"></div>`;
   }
 
   return `
@@ -692,50 +984,90 @@ function renderPublishingPanel(m) {
     </div>`;
 }
 
-async function publishChapterToWebsite(moduleId) {
-  const btn = document.querySelector(`#rr-row-${moduleId} button`);
+async function publishChapterToWebsite(moduleId, callerBtn) {
+  const btn = callerBtn || document.querySelector(`#rr-row-${moduleId} button`);
+  const origText = btn ? btn.textContent : 'Publish Now';
   if (btn) { btn.disabled = true; btn.textContent = 'Publishing…'; }
   try {
     const result = await POST('/api/website/publish', { entry_id: moduleId });
     toast('Published to realmsandroads.com ✓', 'success');
-    // Refresh the module detail to show updated status
     await openModuleDetail(moduleId);
+    // Start polling deploy status if auto-deploy was triggered
+    _pollDeployStatus();
   } catch (e) {
     toast('Publish failed: ' + e.message, 'error');
-    if (btn) { btn.disabled = false; btn.textContent = 'Publish Now'; }
+    if (btn) { btn.disabled = false; btn.textContent = origText; }
   }
 }
 
-function renderPromotingPanel(m) {
-  const pr = m.promoting_status || {};
+async function unpublishChapter(moduleId) {
+  if (!confirm('Remove this chapter from realmsandroads.com? The file will be deleted from the website.')) return;
+  try {
+    await POST('/api/website/unpublish', { entry_id: moduleId });
+    toast('Chapter removed from website', 'success');
+    await openModuleDetail(moduleId);
+  } catch (e) {
+    toast('Unpublish failed: ' + e.message, 'error');
+  }
+}
 
-  const ACTION_LABELS = {
-    wa_broadcast:    'WhatsApp Broadcast',
-    email_excerpt:   'Email Excerpt',
-    serializer_post: 'Serializer Post',
+let _deployPollTimer = null;
+async function _pollDeployStatus() {
+  if (_deployPollTimer) clearInterval(_deployPollTimer);
+  const update = async () => {
+    try {
+      const s = await GET('/api/website/deploy-status');
+      const row = document.getElementById('deploy-status-row');
+      if (!row) { clearInterval(_deployPollTimer); return; }
+      if (s.state === 'idle') {
+        row.textContent = '';
+      } else if (s.state === 'deploying') {
+        const elapsed = s.started_at ? Math.round((Date.now() - new Date(s.started_at)) / 1000) : 0;
+        row.innerHTML = `<span style="color:var(--accent);">⟳ Deploying to AWS Amplify… ${elapsed}s elapsed</span>`;
+      } else if (s.state === 'deployed') {
+        row.innerHTML = `<span style="color:var(--success);">✓ Deployed to AWS Amplify at ${new Date(s.finished_at).toLocaleTimeString()}</span>`;
+        clearInterval(_deployPollTimer);
+      } else if (s.state === 'failed') {
+        row.innerHTML = `<span style="color:var(--danger);">✗ Deploy failed: ${s.error || 'unknown error'}</span>`;
+        clearInterval(_deployPollTimer);
+      }
+    } catch (_) {}
   };
+  await update();
+  _deployPollTimer = setInterval(update, 3000);
+}
 
-  const broadcastRows = Object.entries(pr).map(([key, val]) => {
-    const label  = ACTION_LABELS[key] || key.replace(/_/g, ' ');
-    const isSent = val === 'sent';
-    return `
-      <div class="module-broadcast-row">
-        <span class="module-broadcast-name">${label}</span>
-        <span class="module-broadcast-status${isSent ? ' sent' : ''}">${isSent ? 'Sent' : 'Not Sent'}</span>
-        ${!isSent ? `<button class="module-broadcast-action" onclick="queueBroadcastAction('${m.id}', '${key}')">Queue</button>` : ''}
-      </div>`;
-  }).join('');
+function renderPromotingPanel(m) {
+  const pr       = m.promoting_status || {};
+  const isSent   = pr.serializer_post === 'sent';
+  const chunks   = m.serializer_chunks || [];
+  const hasChunks = chunks.length > 0;
 
-  return `
-    <div class="module-detail-panel-title">Stage 3: Promoting</div>
-    <div class="module-asset-section-title">Broadcast Actions</div>
-    ${broadcastRows}
+  const serializeRow = `
+    <div class="module-broadcast-row">
+      <span class="module-broadcast-name">Serialize Post to WA</span>
+      <span class="module-broadcast-status${isSent ? ' sent' : ''}">${isSent ? 'Sent' : hasChunks ? `${chunks.length} chunks` : 'Not Serialized'}</span>
+      <button class="module-broadcast-action" onclick="openSerializerForModule('${m.id}')">
+        ${hasChunks ? 'View Chunks' : 'Serialize'}
+      </button>
+    </div>`;
+
+  // CRM row only relevant for types that involve individual relationships
+  const CRM_WORK_TYPES = ['Fundraising Campaign', 'Retreat (Event)', 'Subscription'];
+  const showCRM = CRM_WORK_TYPES.includes(m.work_type || 'Book');
+  const crmRow = showCRM ? `
     <div class="module-asset-section-title">CRM</div>
     <div class="module-asset-row">
       <div class="module-asset-dot dot-optional"></div>
       <span class="module-asset-name">Contacts &amp; Leads for this module</span>
-      <button class="module-asset-action" onclick="switchMode('promoting').then(()=>switchPromoTab('contacts'))">View CRM</button>
-    </div>
+      <button class="module-asset-action" onclick="switchMode('people')">View People</button>
+    </div>` : '';
+
+  return `
+    <div class="module-detail-panel-title">Stage 3: Promoting</div>
+    <div class="module-asset-section-title">Broadcast Actions</div>
+    ${serializeRow}
+    ${crmRow}
     <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
       <button class="module-asset-action" onclick="moveModuleToStage('${m.id}', 'publishing')" style="color:var(--muted)">← Back to Publishing</button>
     </div>`;
@@ -757,7 +1089,7 @@ async function moveModuleToStage(moduleId, newStage) {
   try {
     await PUT(`/api/content-pipeline/${moduleId}/workflow-stage`, { stage: newStage });
     // Refresh pipeline cache
-    pipelineState.overviewData = null;
+    pipelineState.overviewData = null; pipelineState.catalogWorks = null;
     toast(`Moved to ${newStage}`, 'success');
     // Re-open the module from fresh data
     await openModuleDetail(moduleId);
@@ -776,21 +1108,522 @@ async function markPlatformPublished(moduleId, platform) {
   }
 }
 
-async function queueBroadcastAction(moduleId, actionKey) {
-  // Navigate to promote / broadcast-posts for now
+async function openSerializerForModule(moduleId) {
+  // Move to Promoting mode and open the Works tab, which shows this module's chunks
   await switchMode('promoting');
-  await switchPromoTab('broadcast-posts');
-  toast('Navigated to Broadcast Posts — queue your post there.', 'info');
+  // The Works tab will show modules at promoting stage; ensure this module is there
+  await loadPromotingWorks();
+  // Scroll to the card if it exists
+  const card = document.getElementById(`promoting-card-${moduleId}`);
+  if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function viewModuleAsset(moduleId, assetKey) {
-  // Navigate to the publishing screen for this chapter
-  toast('Asset view — open the chapter in the publishing screen.', 'info');
+// Maps supporting asset status key → AI asset_type for the generate endpoint
+const ASSET_KEY_TO_AI_TYPE = {
+  'blurb':        'blurb',
+  'tagline':      'tagline',
+  'image_prompt': 'header_image_prompt',
+  'synopsis':     'synopsis',
+};
+
+// Maps supporting asset status key → field in assets object
+const ASSET_KEY_TO_FIELD = {
+  'blurb':        'blurb',
+  'tagline':      'tagline',
+  'image_prompt': 'image_prompt',
+  'synopsis':     'synopsis',
+  'header_image': 'header_image_path',
+  'audio':        'audio',
+};
+
+async function viewModuleAsset(moduleId, assetKey) {
+  const m = moduleDetailState.module;
+  if (!m) return;
+
+  const ESSENTIAL_FIELD = {
+    'Book':                 'prose',
+    'Podcast':              'audio_notes',
+    'Fundraising Campaign': 'campaign_narrative',
+    'Retreat (Event)':      'event_offer',
+    'Subscription':         'edition_content',
+  };
+  const ESSENTIAL_LABEL = {
+    'Book':                 'Chapter Prose',
+    'Podcast':              'Audio Notes / Script',
+    'Fundraising Campaign': 'Campaign Narrative',
+    'Retreat (Event)':      'Event Offer Write-up',
+    'Subscription':         'Edition Content',
+  };
+
+  const isEssential = assetKey === 'essential';
+  const fieldKey    = isEssential ? (ESSENTIAL_FIELD[m.work_type] || 'prose') : (ASSET_KEY_TO_FIELD[assetKey] || assetKey);
+  const aiType      = ASSET_KEY_TO_AI_TYPE[assetKey] || null;
+  const label       = isEssential ? (ESSENTIAL_LABEL[m.work_type] || 'Essential Asset') :
+    assetKey.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+  const assets  = m.assets || {};
+  const current = typeof assets[fieldKey] === 'string' ? assets[fieldKey] : '';
+  const prose   = (assets.prose || '').trim();
+  const workTitle = pipelineState.catalogWorks?.find(w => w.id === m.book)?.title || m.book || '';
+
+  const mc = document.getElementById('modal-content');
+  if (!mc) return;
+
+  // AI-generatable assets: wire into the existing generation panel
+  if (!isEssential && aiType) {
+    // Ensure promoSettings loaded (they contain the real AI prompts)
+    if (!state.promoSettings?.asset_prompts?.length) {
+      try { state.promoSettings = await GET('/api/promo/settings'); } catch (_) {}
+    }
+    const prompts = state.promoSettings?.asset_prompts || state.settings?.asset_prompts || [];
+    _assetModal = { moduleId, workId: m.book || '', role: 'production', prose, title: m.chapter, prompts };
+    _assetModal._inspectType = aiType;
+
+    mc.innerHTML = `
+      <div class="modal-title">${label}</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">${m.chapter} · ${workTitle}</div>
+      <div id="asset-generate-section"></div>
+      <div class="form-group" style="margin-top:4px;">
+        <label class="form-label" style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;">Result</label>
+        <textarea id="new-asset-content" class="form-textarea" style="min-height:200px;font-family:var(--font-mono);font-size:13px;line-height:1.6;"
+                  placeholder="Click Generate, or type directly…">${escHtml(current)}</textarea>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:16px;gap:10px;">
+        <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+        <div style="display:flex;gap:8px;">
+          ${current ? `<button class="btn-secondary" style="color:var(--p1);border-color:var(--p1);"
+                  onclick="clearModuleAsset('${moduleId}','${fieldKey}','${assetKey}')">Clear</button>` : ''}
+          <button class="btn-primary" onclick="saveModuleAssetFromEditor('${moduleId}','${fieldKey}','${assetKey}')">Save</button>
+        </div>
+      </div>`;
+    showModal();
+    // Render the AI generation panel into asset-generate-section
+    onAssetTypeChange(aiType);
+    return;
+  }
+
+  // Header Image: AI image generation panel (Imagen 3)
+  if (assetKey === 'header_image') {
+    const imageUrl = assets['header_image_path'] || '';
+    const imagePrompt = assets['image_prompt'] || '';
+    mc.innerHTML = `
+      <div class="modal-title">Header Image</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">${m.chapter} · ${workTitle}</div>
+      ${imageUrl ? `
+        <div style="margin-bottom:14px;text-align:center;">
+          <img id="header-img-preview" src="${escHtml(imageUrl)}" alt="Header image"
+               style="max-width:100%;max-height:280px;border-radius:6px;border:1px solid var(--border);">
+        </div>` : `
+        <div id="header-img-preview" style="display:none;margin-bottom:14px;text-align:center;"></div>`}
+      <div style="margin-bottom:14px;padding:10px 12px;background:var(--bg2);border-radius:6px;border:1px solid var(--border);font-size:12px;">
+        <div style="font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:4px;">Image Prompt</div>
+        <div style="color:var(--fg);line-height:1.5;">${escHtml(imagePrompt) || '<span style="color:var(--muted);font-style:italic;">No image prompt yet — generate the Image Prompt asset first.</span>'}</div>
+      </div>
+      <div id="header-img-status" style="display:none;margin-bottom:10px;font-size:13px;color:var(--muted);text-align:center;"></div>
+      <div id="header-img-footer" style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+        <button id="header-img-cancel-btn" class="btn-secondary" onclick="closeModal()">Cancel</button>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <label class="btn-secondary" style="cursor:pointer;" title="Upload your own image">
+            Upload
+            <input type="file" accept="image/jpeg,image/png" style="display:none;"
+                   onchange="uploadHeaderImageFile('${moduleId}', this)">
+          </label>
+          ${imageUrl ? `<button class="btn-secondary" style="color:var(--p1);border-color:var(--p1);"
+                  onclick="clearModuleAsset('${moduleId}','header_image_path','header_image')">Clear</button>` : ''}
+          <button id="header-img-gen-btn" class="btn-primary" ${!imagePrompt ? 'disabled title="Add an Image Prompt first"' : ''}
+                  onclick="generateHeaderImage('${moduleId}')">Generate with Imagen</button>
+        </div>
+      </div>`;
+    showModal();
+    return;
+  }
+
+  // Audio asset: pCloud browser + S3 uploader
+  if (assetKey === 'audio') {
+    // assets.audio may be a plain S3 URL string, or a legacy object {s3_url,...}
+    const _audioRaw = assets['audio'];
+    const s3Url = typeof _audioRaw === 'string' ? _audioRaw
+                : (_audioRaw && typeof _audioRaw === 'object' ? (_audioRaw.s3_url || '') : '');
+    const workId = m.book || '';
+    mc.innerHTML = `
+      <div class="modal-title">Audio</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">${m.chapter} · ${workTitle}</div>
+      ${s3Url ? `
+        <div style="margin-bottom:14px;padding:10px 12px;background:var(--bg2);border-radius:6px;border:1px solid var(--border);">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:6px;">Linked Audio (S3)</div>
+          <audio controls style="width:100%;margin-bottom:6px;">
+            <source src="${escHtml(s3Url)}" type="audio/mpeg">
+          </audio>
+          <div style="font-size:11px;color:var(--muted);word-break:break-all;">${escHtml(s3Url)}</div>
+        </div>` : `
+        <div style="margin-bottom:14px;padding:10px 12px;background:var(--bg2);border-radius:6px;border:1px solid var(--border);color:var(--muted);font-size:13px;">
+          No audio linked yet.
+        </div>`}
+      <div style="margin-bottom:12px;">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:8px;">Select from pCloud</div>
+        <div id="audio-file-list" style="font-size:13px;color:var(--muted);">
+          <button class="btn-secondary" style="font-size:12px;" onclick="loadAudioFileList('${workId}','${moduleId}',${m.chapter_number||'null'})">Browse pCloud Folder</button>
+        </div>
+      </div>
+      <div id="audio-upload-status" style="display:none;margin-bottom:10px;font-size:13px;padding:8px 12px;border-radius:6px;background:var(--bg2);"></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+        <button class="btn-secondary" onclick="closeModal()">Close</button>
+        ${s3Url ? `<button class="btn-secondary" style="color:var(--danger);border-color:var(--danger);"
+                onclick="unlinkAudio('${moduleId}')">Unlink Audio</button>` : ''}
+      </div>`;
+    showModal();
+    return;
+  }
+
+  // Non-AI assets (prose): plain editor
+  mc.innerHTML = `
+    <div class="modal-title">${label}</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">${m.chapter} · ${workTitle}</div>
+    <textarea id="asset-editor-text" class="form-textarea" style="min-height:280px;font-family:var(--font-mono);font-size:13px;line-height:1.6;"
+              placeholder="Enter ${label.toLowerCase()} here…">${escHtml(current)}</textarea>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:16px;gap:10px;">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <div style="display:flex;gap:8px;">
+        ${current ? `<button class="btn-secondary" style="color:var(--p1);border-color:var(--p1);"
+                onclick="clearModuleAsset('${moduleId}','${fieldKey}','${assetKey}')">Clear</button>` : ''}
+        <button class="btn-primary" onclick="saveModuleAsset('${moduleId}','${fieldKey}','${assetKey}')">Save</button>
+      </div>
+    </div>`;
+  showModal();
+}
+
+async function generateHeaderImage(moduleId) {
+  const btn    = document.getElementById('header-img-gen-btn');
+  const status = document.getElementById('header-img-status');
+  if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
+  if (status) { status.style.display = 'block'; status.textContent = 'Sending to Google Imagen 3… this may take 20–40 seconds.'; }
+  try {
+    const res = await POST(`/api/modules/${moduleId}/generate-header-image`, {});
+    if (res.ok) {
+      // Update in-memory module state so the preview refreshes
+      if (moduleDetailState.module) {
+        moduleDetailState.module.assets = moduleDetailState.module.assets || {};
+        moduleDetailState.module.assets.header_image_path = res.image_url;
+        const ps = moduleDetailState.module.producing_status || {};
+        const sa = ps.supporting_assets || {};
+        sa.header_image = 'done';
+      }
+      // Show the generated image in the modal
+      const preview = document.getElementById('header-img-preview');
+      if (preview) {
+        preview.style.display = 'block';
+        preview.innerHTML = `<img src="${res.image_url}?t=${Date.now()}" alt="Header image"
+          style="max-width:100%;max-height:280px;border-radius:6px;border:1px solid var(--border);">`;
+      }
+      if (status) { status.style.color = 'var(--p3)'; status.textContent = 'Image saved automatically — click Done to close.'; }
+      if (btn) { btn.textContent = 'Regenerate'; btn.disabled = false; }
+      // Replace footer with a clear Done button
+      const footer = document.getElementById('header-img-footer');
+      if (footer) {
+        footer.innerHTML = `
+          <div></div>
+          <button class="btn-primary" onclick="closeModal()" style="padding:8px 28px;">Done</button>`;
+      }
+      // Silently refresh module detail in the background (don't close modal)
+      GET(`/api/content-pipeline/${moduleId}`).then(updated => {
+        if (updated && moduleDetailState.module) {
+          moduleDetailState.module.assets = updated.assets || moduleDetailState.module.assets;
+          moduleDetailState.module.producing_status = updated.producing_status || moduleDetailState.module.producing_status;
+          // Re-render the panel so status dots update immediately (even if user closes via X)
+          const panel = document.getElementById('module-detail-panel');
+          if (panel) panel.innerHTML = renderModuleDetailPanel(moduleDetailState.module, moduleDetailState.activeStage);
+        }
+      }).catch(() => {});
+    } else {
+      throw new Error(res.error || 'Generation failed');
+    }
+  } catch (e) {
+    if (status) { status.style.color = 'var(--danger)'; status.textContent = `Error: ${e.message}`; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Generate with Imagen'; }
+  }
+}
+
+async function loadAudioFileList(workId, moduleId, chapterNumber) {
+  const container = document.getElementById('audio-file-list');
+  if (!container) return;
+  container.innerHTML = '<span style="color:var(--muted);">Loading…</span>';
+  try {
+    const data = await GET(`/api/audio/browse/${encodeURIComponent(workId)}`);
+    if (!data.files || !data.files.length) {
+      container.innerHTML = `<span style="color:var(--muted);">No MP3 files found in pCloud folder.</span><div style="font-size:11px;color:var(--muted);margin-top:4px;">${escHtml(data.folder)}</div>`;
+      return;
+    }
+    const rows = data.files.map(f => `
+      <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);">
+        <span style="flex:1;font-size:13px;">${escHtml(f)}</span>
+        <button class="btn-primary" style="font-size:11px;padding:4px 12px;"
+                onclick="uploadAudioToS3('${workId}','${escHtml(f).replace(/'/g,"\\'")}','${moduleId}',${chapterNumber||'null'})">
+          Upload to S3
+        </button>
+      </div>`).join('');
+    container.innerHTML = `<div style="font-size:11px;color:var(--muted);margin-bottom:6px;">${escHtml(data.folder)}</div>${rows}`;
+  } catch (e) {
+    container.innerHTML = `<span style="color:var(--danger);">Error: ${e.message}</span>`;
+  }
+}
+
+async function uploadAudioToS3(workId, filename, moduleId, chapterNumber) {
+  const statusEl = document.getElementById('audio-upload-status');
+  if (statusEl) { statusEl.style.display = 'block'; statusEl.textContent = 'Starting upload…'; statusEl.style.color = 'var(--muted)'; }
+
+  try {
+    const job = await POST('/api/audio/upload', { work_id: workId, filename, module_id: moduleId, chapter_number: chapterNumber });
+    if (!job.ok) throw new Error(job.error || 'Upload failed');
+
+    if (statusEl) statusEl.textContent = `Uploading to S3… 0%`;
+
+    // Poll for progress
+    const poll = setInterval(async () => {
+      try {
+        const s = await GET(`/api/audio/upload-status/${job.job_id}`);
+        if (s.state === 'uploading') {
+          if (statusEl) statusEl.textContent = `Uploading to S3… ${s.progress}%`;
+        } else if (s.state === 'done') {
+          clearInterval(poll);
+          if (statusEl) { statusEl.style.color = 'var(--success)'; statusEl.textContent = `✓ Uploaded — ${s.url}`; }
+          // Update in-memory state and refresh modal + producing panel dot
+          if (moduleDetailState.module) {
+            moduleDetailState.module.assets = moduleDetailState.module.assets || {};
+            moduleDetailState.module.assets.audio = s.url;
+            if (moduleDetailState.module.producing_status?.supporting_assets)
+              moduleDetailState.module.producing_status.supporting_assets.audio = 'done';
+            // Re-render the panel so the green dot appears immediately
+            const panel = document.getElementById('module-detail-panel');
+            if (panel) panel.innerHTML = renderModuleDetailPanel(moduleDetailState.module, moduleDetailState.activeStage);
+          }
+          setTimeout(() => viewModuleAsset(moduleId, 'audio'), 1200);
+        } else if (s.state === 'error') {
+          clearInterval(poll);
+          if (statusEl) { statusEl.style.color = 'var(--danger)'; statusEl.textContent = `Upload failed: ${s.error}`; }
+        }
+      } catch (_) {}
+    }, 1500);
+
+  } catch (e) {
+    if (statusEl) { statusEl.style.color = 'var(--danger)'; statusEl.textContent = `Error: ${e.message}`; }
+  }
+}
+
+async function unlinkAudio(moduleId) {
+  if (!confirm('Unlink audio from this chapter? The S3 file will NOT be deleted.')) return;
+  try {
+    await POST(`/api/audio/unlink/${moduleId}`, {});
+    if (moduleDetailState.module?.assets) delete moduleDetailState.module.assets.audio;
+    toast('Audio unlinked', 'success');
+    viewModuleAsset(moduleId, 'audio');
+  } catch (e) {
+    toast('Unlink failed: ' + e.message, 'error');
+  }
+}
+
+async function uploadHeaderImageFile(moduleId, input) {
+  const file = input.files[0];
+  if (!file) return;
+  const formData = new FormData();
+  formData.append('file', file);
+  try {
+    const res = await fetch(`/api/pipeline/${moduleId}/upload-image`, { method: 'POST', body: formData });
+    const data = await res.json();
+    if (data.image_url || data.header_image_path) {
+      const url = data.image_url || data.header_image_path;
+      if (moduleDetailState.module) {
+        moduleDetailState.module.assets = moduleDetailState.module.assets || {};
+        moduleDetailState.module.assets.header_image_path = url;
+      }
+      const preview = document.getElementById('header-img-preview');
+      if (preview) {
+        preview.style.display = 'block';
+        preview.innerHTML = `<img src="${url}?t=${Date.now()}" alt="Header image"
+          style="max-width:100%;max-height:280px;border-radius:6px;border:1px solid var(--border);">`;
+      }
+      toast('Image uploaded', 'success');
+    } else {
+      toast(data.error || 'Upload failed', 'error');
+    }
+  } catch (e) {
+    toast('Upload failed: ' + e.message, 'error');
+  }
+}
+
+// Save from AI generation modal (reads from new-asset-content textarea)
+async function saveChapterNumber(moduleId, value) {
+  const n = parseInt(value, 10);
+  if (!n || n < 1) { toast('Chapter number must be a positive integer', 'error'); return; }
+  try {
+    const updated = await PUT(`/api/content-pipeline/${moduleId}`, { chapter_number: n });
+    if (moduleDetailState.module) moduleDetailState.module.chapter_number = n;
+    toast(`Chapter number set to ${n}`, 'success');
+  } catch(e) {
+    toast('Failed to save chapter number', 'error');
+  }
+}
+
+async function saveModuleAssetFromEditor(moduleId, fieldKey, statusKey) {
+  const text = document.getElementById('new-asset-content')?.value || '';
+  await _doSaveModuleAsset(moduleId, fieldKey, statusKey, text);
+}
+
+function escHtml(str) {
+  return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function saveModuleAsset(moduleId, fieldKey, statusKey) {
+  const text = document.getElementById('asset-editor-text')?.value || '';
+  await _doSaveModuleAsset(moduleId, fieldKey, statusKey, text);
+}
+
+async function _doSaveModuleAsset(moduleId, fieldKey, statusKey, text) {
+  try {
+    await PUT(`/api/content-pipeline/${moduleId}`, {
+      assets: { ...moduleDetailState.module.assets, [fieldKey]: text }
+    });
+    const isDone = text.trim().length > 0;
+    const isEssential = statusKey === 'essential';
+    if (isEssential) {
+      await PUT(`/api/content-pipeline/${moduleId}/producing-status`, { essential_asset: isDone ? 'done' : 'missing' });
+    } else {
+      await PUT(`/api/content-pipeline/${moduleId}/producing-status`, { supporting_assets: { [statusKey]: isDone ? 'done' : 'missing' } });
+    }
+    toast('Saved ✓', 'success');
+    closeModal();
+    await openModuleDetail(moduleId);
+  } catch (e) {
+    toast('Save failed: ' + e.message, 'error');
+  }
+}
+
+async function clearModuleAsset(moduleId, fieldKey, statusKey) {
+  if (!confirm('Clear this asset? The text will be deleted.')) return;
+  try {
+    await PUT(`/api/content-pipeline/${moduleId}`, {
+      assets: { ...moduleDetailState.module.assets, [fieldKey]: '' }
+    });
+    const isEssential = statusKey === 'essential';
+    if (isEssential) {
+      await PUT(`/api/content-pipeline/${moduleId}/producing-status`, { essential_asset: 'missing' });
+    } else {
+      await PUT(`/api/content-pipeline/${moduleId}/producing-status`, { supporting_assets: { [statusKey]: 'missing' } });
+    }
+    toast('Cleared', 'success');
+    closeModal();
+    await openModuleDetail(moduleId);
+  } catch (e) {
+    toast('Clear failed: ' + e.message, 'error');
+  }
+}
+
+// ── Add Module ────────────────────────────────────────────────────────────────
+
+function openAddModuleModal(encodedWorkId, encodedWorkType) {
+  const workId   = decodeURIComponent(encodedWorkId);
+  const workType = decodeURIComponent(encodedWorkType);
+  const isBook   = workType === 'Book';
+  const mc = document.getElementById('modal-content');
+  if (!mc) return;
+  mc.innerHTML = `
+    <div class="modal-title">Add Module</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:16px;">${workId} · ${workType}</div>
+    <div class="form-group">
+      <label class="form-label">${isBook ? 'Chapter Title' : 'Module Title'}</label>
+      <input id="am-title" class="form-input" placeholder="${isBook ? 'e.g. The Final Battle' : 'Module name'}"/>
+    </div>
+    ${isBook ? `<div class="form-group">
+      <label class="form-label">Chapter Number <span style="color:var(--muted);font-weight:400;">(optional — auto-assigned if blank)</span></label>
+      <input id="am-chapter-num" class="form-input" type="number" min="1" placeholder="e.g. 12"/>
+    </div>` : ''}
+    <div class="form-group">
+      <label class="form-label">Prose / Content <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
+      <textarea id="am-prose" class="form-textarea" style="min-height:120px;font-family:var(--font-mono);font-size:12px;"
+                placeholder="Paste the ${isBook ? 'chapter prose' : 'content'} here if you have it…"></textarea>
+    </div>
+    <div class="modal-actions" style="display:flex;justify-content:space-between;margin-top:20px;">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="submitAddModule('${encodeURIComponent(workId)}','${encodeURIComponent(workType)}')">Add Module</button>
+    </div>`;
+  showModal();
+}
+
+async function submitAddModule(encodedWorkId, encodedWorkType) {
+  const workId   = decodeURIComponent(encodedWorkId);
+  const workType = decodeURIComponent(encodedWorkType);
+  const title     = document.getElementById('am-title')?.value.trim();
+  const chNumRaw  = document.getElementById('am-chapter-num')?.value.trim();
+  const prose     = document.getElementById('am-prose')?.value.trim() || '';
+
+  if (!title) { toast('Title is required', 'error'); return; }
+
+  // Auto-assign chapter number if blank
+  let chapterNumber = chNumRaw ? parseInt(chNumRaw, 10) : null;
+
+  const hasProse = prose.length > 0;
+  const entry = {
+    chapter:        title,
+    book:           workId,
+    work_type:      workType,
+    chapter_number: chapterNumber,
+    workflow_stage: 'producing',  // always start in Producing; user advances manually
+    assets:         { prose, synopsis: '', blurb: '', tagline: '', image_prompt: '', author_note: '' },
+    producing_status: {
+      essential_asset: hasProse ? 'done' : 'missing',
+      supporting_assets: {},  // backend fills from Asset Register based on work_type
+    },
+    publishing_status: workType === 'Book'
+      ? { vip_group: 'not_started', patreon: 'not_started', website: 'not_started', wa_channel: 'not_started' }
+      : {},
+    promoting_status: { serializer_post: 'not_sent' },
+  };
+
+  try {
+    await POST('/api/content-pipeline', entry);
+    pipelineState.overviewData = null; pipelineState.catalogWorks = null;
+    closeModal();
+    toast(`Module "${title}" added`, 'success');
+    _expandedProducingWorks.add(workId);
+    await loadProducing();
+  } catch (e) {
+    toast('Failed: ' + e.message, 'error');
+  }
+}
+
+// ── Delete Work / Module ──────────────────────────────────────────────────────
+
+async function confirmDeleteWork(encodedWorkId) {
+  const workId = decodeURIComponent(encodedWorkId);
+  if (!confirm(`Delete work "${workId}" and ALL its modules? This cannot be undone.`)) return;
+  try {
+    await DEL(`/api/catalog-works/${encodeURIComponent(workId)}`);
+    pipelineState.overviewData = null; pipelineState.catalogWorks = null;
+    _expandedProducingWorks.delete(workId);
+    toast(`Deleted "${workId}"`, 'success');
+    await loadProducing();
+  } catch (e) {
+    toast('Delete failed: ' + e.message, 'error');
+  }
+}
+
+async function confirmDeleteModule(moduleId) {
+  if (!confirm('Delete this module? This cannot be undone.')) return;
+  try {
+    await DEL(`/api/content-pipeline/${moduleId}`);
+    pipelineState.overviewData = null; pipelineState.catalogWorks = null;
+    toast('Module deleted', 'success');
+    await loadProducing();
+  } catch (e) {
+    toast('Delete failed: ' + e.message, 'error');
+  }
 }
 
 // ── + New Work Modal ──────────────────────────────────────────────────────────
 
+let _newWorkOriginMode = 'producing';
+
 function openNewWorkModal() {
+  _newWorkOriginMode = state.currentMode || 'producing';
   const mc = document.getElementById('modal-content');
   if (!mc) return;
   mc.innerHTML = renderNewWorkStep1();
@@ -798,7 +1631,7 @@ function openNewWorkModal() {
 }
 
 function renderNewWorkStep1() {
-  const types = ['Book', 'Podcast', 'Fundraising Campaign', 'Retreat (Event)'];
+  const types = ['Book', 'Podcast', 'Fundraising Campaign', 'Retreat (Event)', 'Subscription'];
   const btns  = types.map(t => `
     <button class="type-btn" style="padding:12px 20px; margin:6px; font-size:13px; min-width:140px;"
             onclick="selectNewWorkType('${t}')">${t}</button>`).join('');
@@ -894,9 +1727,15 @@ async function submitNewWork(workType) {
     const imported = result.chapters_imported || 0;
     closeModal();
     toast(`Created "${title}"${imported ? ` · ${imported} chapters imported` : ''}`, 'success');
-    // Navigate to Publishing screen and expand the new work
+    pipelineState.overviewData = null; pipelineState.catalogWorks = null;
     _expandedWorks.add(result.work.id);
-    await switchMode('publishing');
+    _expandedProducingWorks.add(result.work.id);
+    // Return to where the modal was opened from
+    if (_newWorkOriginMode === 'producing') {
+      await loadProducing();
+    } else {
+      await switchMode('publishing');
+    }
   } catch (e) {
     toast('Failed to create work: ' + e.message, 'error');
   }
@@ -1027,12 +1866,19 @@ async function loadSettingsModal() {
   const body = document.getElementById('settings-modal-body');
   if (!body) return;
   try {
-    const [promoSettings, appSettings] = await Promise.all([
+    const [promoSettings, appSettings, assetRegistry, workTypes] = await Promise.all([
       GET('/api/promo/settings'),
       GET('/api/settings'),
+      GET('/api/asset-register'),
+      GET('/api/work-types'),
     ]);
+    // Cache work types for use in asset edit modals
+    state._workTypes = workTypes;
     renderSettingsModal(body, promoSettings, appSettings);
     switchSettingsTab(_settingsActiveTab);
+    // Populate registry pane after DOM is rendered
+    const regPane = document.getElementById('registry-pane-content');
+    if (regPane) regPane.innerHTML = renderRegistryPane(workTypes, assetRegistry);
   } catch (e) {
     body.innerHTML = `<div style="color:var(--muted);padding:16px;">Failed to load settings: ${e.message}</div>`;
   }
@@ -1059,6 +1905,7 @@ function renderSettingsModal(body, promo, app) {
         <tr><td>Message Maker</td><td><input class="form-input" id="s-ai-message" value="${escHtml((ai.message_maker || {}).model || '')}"/></td></tr>
         <tr><td>Work Serializer</td><td><input class="form-input" id="s-ai-serializer" value="${escHtml((ai.work_serializer || {}).model || '')}"/></td></tr>
         <tr><td>Broadcast Post</td><td><input class="form-input" id="s-ai-broadcast" value="${escHtml((ai.broadcast_post || {}).model || '')}"/></td></tr>
+        <tr><td>Sales Message (CRM)</td><td><input class="form-input" id="s-ai-sales-message" value="${escHtml((ai.sales_message || {}).model || '')}"/></td></tr>
       </table>
     </div>
     <div id="settings-pane-schedule" class="settings-tab-pane">
@@ -1067,6 +1914,12 @@ function renderSettingsModal(body, promo, app) {
         <tr><td>Delivery Hour (24h)</td><td><input class="form-input" type="number" id="s-delivery-hour" value="${escHtml(String(promo.delivery_hour ?? 8))}"/></td></tr>
         <tr><td>Posting Days</td><td><input class="form-input" id="s-posting-days" value="${escHtml((promo.posting_days || []).join(', '))}"/></td></tr>
       </table>
+    </div>
+    <div id="settings-pane-prompts" class="settings-tab-pane">
+      ${renderPromptsPane(promo.asset_prompts || [])}
+    </div>
+    <div id="settings-pane-registry" class="settings-tab-pane">
+      <div id="registry-pane-content" style="color:var(--muted);font-size:13px;">Loading…</div>
     </div>
     <div id="settings-pane-website" class="settings-tab-pane">
       <div class="settings-section-title">Website Connection</div>
@@ -1097,23 +1950,37 @@ function renderSettingsModal(body, promo, app) {
 
 async function saveSettingsModal() {
   try {
-    // Read branding fields
-    const patchPromo = {
-      whatsapp_sender: {
-        channel_name: document.getElementById('s-wa-channel-name')?.value || '',
-        author_name:  document.getElementById('s-wa-author-name')?.value  || '',
-        cta_url:      document.getElementById('s-wa-cta-url')?.value      || '',
-        cta_label:    document.getElementById('s-wa-cta-label')?.value    || '',
-      }
-    };
-    // Delivery schedule
-    const delivHour  = parseInt(document.getElementById('s-delivery-hour')?.value || '8');
-    const postDays   = (document.getElementById('s-posting-days')?.value || '')
-                         .split(',').map(s => s.trim()).filter(Boolean);
-    patchPromo.delivery_hour = delivHour;
-    patchPromo.posting_days  = postDays;
+    // Fetch current promo settings so we only overwrite the fields on this screen,
+    // leaving asset_prompts, etc. untouched.
+    const currentPromo = await GET('/api/promo/settings');
 
-    await PUT('/api/promo/settings', patchPromo);
+    currentPromo.whatsapp_sender = {
+      channel_name: document.getElementById('s-wa-channel-name')?.value || '',
+      author_name:  document.getElementById('s-wa-author-name')?.value  || '',
+      cta_url:      document.getElementById('s-wa-cta-url')?.value      || '',
+      cta_label:    document.getElementById('s-wa-cta-label')?.value    || '',
+    };
+    currentPromo.delivery_hour = parseInt(document.getElementById('s-delivery-hour')?.value || '8');
+    currentPromo.posting_days  = (document.getElementById('s-posting-days')?.value || '')
+                                   .split(',').map(s => s.trim()).filter(Boolean);
+
+    // AI provider models — save each row from the AI providers table
+    if (!currentPromo.ai_providers) currentPromo.ai_providers = {};
+    const aiRows = {
+      proverb_generator: document.getElementById('s-ai-proverb')?.value.trim(),
+      message_maker:     document.getElementById('s-ai-message')?.value.trim(),
+      work_serializer:   document.getElementById('s-ai-serializer')?.value.trim(),
+      broadcast_post:    document.getElementById('s-ai-broadcast')?.value.trim(),
+      sales_message:     document.getElementById('s-ai-sales-message')?.value.trim(),
+    };
+    for (const [key, model] of Object.entries(aiRows)) {
+      if (model !== undefined) {
+        if (!currentPromo.ai_providers[key]) currentPromo.ai_providers[key] = {};
+        currentPromo.ai_providers[key].model = model;
+      }
+    }
+
+    await PUT('/api/promo/settings', currentPromo);
 
     // Website settings
     const websiteDir = document.getElementById('s-website-dir')?.value.trim() || '';
@@ -1126,6 +1993,646 @@ async function saveSettingsModal() {
     toast('Save failed: ' + e.message, 'error');
   }
 }
+
+// ── Registry Settings Pane (Works + Assets sub-tabs) ─────────────────────────
+
+let _registryActiveTab = 'works';
+
+function renderRegistryPane(workTypes, assetRegistry) {
+  return `
+    <div style="display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid var(--border);">
+      <button id="reg-tab-works" onclick="switchRegistryTab('works')"
+              style="padding:8px 18px;font-size:12px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;cursor:pointer;border:none;border-bottom:2px solid ${_registryActiveTab==='works'?'var(--accent)':'transparent'};background:none;color:${_registryActiveTab==='works'?'var(--accent)':'var(--muted)'};">Works</button>
+      <button id="reg-tab-assets" onclick="switchRegistryTab('assets')"
+              style="padding:8px 18px;font-size:12px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;cursor:pointer;border:none;border-bottom:2px solid ${_registryActiveTab==='assets'?'var(--accent)':'transparent'};background:none;color:${_registryActiveTab==='assets'?'var(--accent)':'var(--muted)'};">Assets</button>
+    </div>
+    <div id="reg-content-works"  ${_registryActiveTab!=='works'  ? 'style="display:none"':''}>
+      ${renderWorksRegistryPane(workTypes)}
+    </div>
+    <div id="reg-content-assets" ${_registryActiveTab!=='assets' ? 'style="display:none"':''}>
+      ${renderAssetRegistryPane(assetRegistry)}
+    </div>`;
+}
+
+function switchRegistryTab(tab) {
+  _registryActiveTab = tab;
+  document.getElementById('reg-content-works').style.display  = tab==='works'  ? '' : 'none';
+  document.getElementById('reg-content-assets').style.display = tab==='assets' ? '' : 'none';
+  ['works','assets'].forEach(t => {
+    const btn = document.getElementById(`reg-tab-${t}`);
+    if (btn) {
+      btn.style.borderBottomColor = t===tab ? 'var(--accent)' : 'transparent';
+      btn.style.color = t===tab ? 'var(--accent)' : 'var(--muted)';
+    }
+  });
+}
+
+// ── Works Registry ────────────────────────────────────────────────────────────
+
+function renderWorksRegistryPane(workTypes) {
+  const rows = workTypes.map((wt, idx) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);">
+      <div>
+        <div style="font-size:13px;font-weight:600;">${escHtml(wt.name)}
+          <span style="font-size:10px;font-family:var(--font-mono);color:var(--muted);margin-left:8px;">${escHtml(wt.key)}</span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px;">
+          Essential: <code>${escHtml(wt.essential_asset_label||wt.essential_asset_key||'—')}</code>
+          ${wt.description ? ' · '+escHtml(wt.description.slice(0,60))+(wt.description.length>60?'…':'') : ''}
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;">
+        <button class="module-asset-action" style="font-size:11px;padding:4px 10px;"
+                onclick="openEditWorkTypeModal(${idx})">Edit</button>
+        <button class="module-asset-action" style="font-size:11px;padding:4px 10px;border-color:var(--danger,#f44336);color:var(--danger,#f44336);"
+                onclick="deleteWorkType(${idx})">Delete</button>
+      </div>
+    </div>`).join('');
+  return `
+    <div class="settings-section-title">Work Types</div>
+    <div style="color:var(--muted);font-size:12px;margin-bottom:12px;">
+      Define the categories of creative work Indaba tracks. Each type has a unique essential asset and inherits supporting assets from the Asset Registry.
+    </div>
+    ${rows||'<div style="color:var(--muted);font-size:13px;margin-bottom:12px;">No work types defined yet.</div>'}
+    <button class="module-asset-action" style="border-color:var(--accent);color:var(--accent);margin-top:12px;"
+            onclick="openNewWorkTypeModal()">+ New Work Type</button>`;
+}
+
+async function _getWorkTypes()      { return GET('/api/work-types'); }
+async function _saveWorkTypes(wts)  { await PUT('/api/work-types', wts); state._workTypes = wts; }
+
+async function deleteWorkType(idx) {
+  if (!confirm('Delete this work type? Existing Works of this type are unaffected.')) return;
+  try {
+    const wts = await _getWorkTypes();
+    wts.splice(idx, 1);
+    await _saveWorkTypes(wts);
+    toast('Work type deleted', 'success');
+    await loadSettingsModal(); switchSettingsTab('registry'); _registryActiveTab='works';
+  } catch (e) { toast('Delete failed: ' + e.message, 'error'); }
+}
+
+function _workTypeFormHTML(wt) {
+  return `
+    <div class="form-group">
+      <label class="form-label">Key <span style="color:var(--muted);font-size:11px;">(unique, used in data — e.g. Book, Podcast)</span></label>
+      <input class="form-input" id="wt-key" value="${escHtml(wt?.key||'')}" placeholder="e.g. Course"
+             ${wt?'readonly style="opacity:0.6;"':''}/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Display Name</label>
+      <input class="form-input" id="wt-name" value="${escHtml(wt?.name||'')}" placeholder="e.g. Online Course"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Description</label>
+      <textarea class="form-input" id="wt-description" rows="2"
+                placeholder="What is this type of work?">${escHtml(wt?.description||'')}</textarea>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Essential Asset Key <span style="color:var(--muted);font-size:11px;">(primary content for each module)</span></label>
+      <input class="form-input" id="wt-ea-key" value="${escHtml(wt?.essential_asset_key||'')}" placeholder="e.g. lesson_notes"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Essential Asset Label <span style="color:var(--muted);font-size:11px;">(shown in UI)</span></label>
+      <input class="form-input" id="wt-ea-label" value="${escHtml(wt?.essential_asset_label||'')}" placeholder="e.g. Lesson Notes"/>
+    </div>`;
+}
+
+function openNewWorkTypeModal() {
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">New Work Type</div>
+    ${_workTypeFormHTML(null)}
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="submitNewWorkType()">Create</button>
+    </div>`;
+  showModal();
+}
+
+async function submitNewWorkType() {
+  const key         = document.getElementById('wt-key')?.value.trim();
+  const name        = document.getElementById('wt-name')?.value.trim();
+  const description = document.getElementById('wt-description')?.value.trim();
+  const eaKey       = document.getElementById('wt-ea-key')?.value.trim();
+  const eaLabel     = document.getElementById('wt-ea-label')?.value.trim();
+  if (!key)  { toast('Key is required', 'error'); return; }
+  if (!name) { toast('Name is required', 'error'); return; }
+  try {
+    const wts = await _getWorkTypes();
+    if (wts.find(w => w.key === key)) { toast(`Key "${key}" already exists`, 'error'); return; }
+    wts.push({ key, name, description, essential_asset_key: eaKey, essential_asset_label: eaLabel });
+    await _saveWorkTypes(wts);
+    toast('Work type created', 'success');
+    closeModal();
+    await loadSettingsModal(); switchSettingsTab('registry'); _registryActiveTab='works';
+  } catch (e) { toast('Save failed: ' + e.message, 'error'); }
+}
+
+async function openEditWorkTypeModal(idx) {
+  let wts;
+  try { wts = await _getWorkTypes(); } catch (e) { toast('Could not load work types', 'error'); return; }
+  const wt = wts[idx];
+  if (!wt) { toast('Work type not found', 'error'); return; }
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">Edit: ${escHtml(wt.name)}</div>
+    ${_workTypeFormHTML(wt)}
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="submitEditWorkType(${idx})">Save Changes</button>
+    </div>`;
+  showModal();
+}
+
+async function submitEditWorkType(idx) {
+  const name        = document.getElementById('wt-name')?.value.trim();
+  const description = document.getElementById('wt-description')?.value.trim();
+  const eaKey       = document.getElementById('wt-ea-key')?.value.trim();
+  const eaLabel     = document.getElementById('wt-ea-label')?.value.trim();
+  if (!name) { toast('Name is required', 'error'); return; }
+  try {
+    const wts = await _getWorkTypes();
+    if (!wts[idx]) { toast('Work type not found', 'error'); return; }
+    wts[idx] = { ...wts[idx], name, description, essential_asset_key: eaKey, essential_asset_label: eaLabel };
+    await _saveWorkTypes(wts);
+    toast('Work type saved', 'success');
+    closeModal();
+    await loadSettingsModal(); switchSettingsTab('registry'); _registryActiveTab='works';
+  } catch (e) { toast('Save failed: ' + e.message, 'error'); }
+}
+
+// ── Asset Registry Settings Pane ─────────────────────────────────────────────
+
+// Work type keys for asset form checkboxes — use cached state or default
+function _currentWorkTypeKeys() {
+  return (state._workTypes || []).map(wt => wt.key);
+}
+
+const ALL_WORK_TYPES = ['Book', 'Podcast', 'Fundraising Campaign', 'Retreat (Event)'];
+
+function renderAssetRegistryPane(assets) {
+  if (!assets.length) {
+    return `
+      <div class="settings-section-title">Asset Register</div>
+      <div style="color:var(--muted);font-size:13px;margin-bottom:16px;">No assets defined yet.</div>
+      <button class="module-asset-action" style="border-color:var(--accent);color:var(--accent);"
+              onclick="openNewAssetModal()">+ New Asset</button>`;
+  }
+  const essentials  = assets.filter(a => a.role === 'essential');
+  const supporting  = assets.filter(a => a.role === 'supporting');
+
+  function rows(list) {
+    return list.map((a, i) => {
+      const realIdx = assets.indexOf(a);
+      const wt = (a.work_types || []).join(', ') || '—';
+      const aiTag = a.ai_generated ? '<span style="font-size:10px;background:var(--accent);color:#fff;padding:1px 5px;border-radius:3px;margin-left:6px;">AI</span>' : '';
+      return `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border);">
+          <div>
+            <div style="font-size:13px;font-weight:600;">${escHtml(a.name)}${aiTag}
+              <span style="font-size:10px;font-family:var(--font-mono);color:var(--muted);margin-left:8px;">${escHtml(a.key)}</span>
+            </div>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px;">${escHtml(wt)}</div>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button class="module-asset-action" style="font-size:11px;padding:4px 10px;"
+                    onclick="openEditAssetModal(${realIdx})">Edit</button>
+            <button class="module-asset-action" style="font-size:11px;padding:4px 10px;border-color:var(--danger,#f44336);color:var(--danger,#f44336);"
+                    onclick="deleteAssetEntry(${realIdx})">Delete</button>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  return `
+    <div class="settings-section-title">Asset Register</div>
+    <div style="color:var(--muted);font-size:12px;margin-bottom:12px;">
+      Define which assets are tracked for each work type. New modules inherit these automatically.
+      Supporting assets marked <span style="background:var(--accent);color:#fff;padding:1px 5px;border-radius:3px;font-size:10px;">AI</span> have AI generation prompts configured in the AI Prompts tab.
+    </div>
+    ${essentials.length ? `<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin:12px 0 4px;">Essential Assets</div>${rows(essentials)}` : ''}
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin:14px 0 4px;">Supporting Assets</div>
+    ${rows(supporting)}
+    <button class="module-asset-action" style="border-color:var(--accent);color:var(--accent);margin-top:14px;"
+            onclick="openNewAssetModal()">+ New Asset</button>`;
+}
+
+async function _getAssetRegistry()  { return GET('/api/asset-register'); }
+async function _saveAssetRegistry(r) {
+  await PUT('/api/asset-register', r);
+}
+
+async function deleteAssetEntry(idx) {
+  if (!confirm('Delete this asset? Existing module data is unaffected.')) return;
+  try {
+    const reg = await _getAssetRegistry();
+    reg.splice(idx, 1);
+    await _saveAssetRegistry(reg);
+    toast('Asset deleted', 'success');
+    await loadSettingsModal();
+    switchSettingsTab('registry'); switchRegistryTab('assets');
+  } catch (e) { toast('Delete failed: ' + e.message, 'error'); }
+}
+
+function _assetFormHTML(a) {
+  const wts = a ? (a.work_types || []) : [];
+  return `
+    <div class="form-group">
+      <label class="form-label">Key <span style="color:var(--muted);font-size:11px;">(unique, no spaces — e.g. synopsis, transcript)</span></label>
+      <input class="form-input" id="ar-key" placeholder="e.g. synopsis" value="${escHtml(a?.key || '')}"
+             ${a ? 'readonly style="opacity:0.6;"' : ''}/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Name</label>
+      <input class="form-input" id="ar-name" placeholder="e.g. Chapter Synopsis" value="${escHtml(a?.name || '')}"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Role</label>
+      <div style="display:flex;gap:16px;margin-top:4px;">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+          <input type="radio" name="ar-role" value="supporting" ${(!a || a.role === 'supporting') ? 'checked' : ''}/>
+          Supporting
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+          <input type="radio" name="ar-role" value="essential" ${a?.role === 'essential' ? 'checked' : ''}/>
+          Essential
+        </label>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Description</label>
+      <textarea class="form-input" id="ar-description" rows="2"
+                placeholder="What is this asset?">${escHtml(a?.description || '')}</textarea>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Applies to Work Types</label>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;">
+        ${ALL_WORK_TYPES.map(wt => `
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+            <input type="checkbox" name="ar-wt" value="${wt}" ${wts.includes(wt) ? 'checked' : ''}
+                   style="width:14px;height:14px;accent-color:var(--accent);"/>
+            ${escHtml(wt)}
+          </label>`).join('')}
+      </div>
+    </div>
+    <div class="form-group">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+        <input type="checkbox" id="ar-ai-generated" ${a?.ai_generated ? 'checked' : ''}
+               style="width:14px;height:14px;accent-color:var(--accent);"/>
+        <span class="form-label" style="margin:0;">AI generated (has a prompt in AI Prompts tab)</span>
+      </label>
+    </div>`;
+}
+
+function openNewAssetModal() {
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">New Asset</div>
+    ${_assetFormHTML(null)}
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="submitNewAsset()">Create Asset</button>
+    </div>`;
+  showModal();
+}
+
+async function submitNewAsset() {
+  const key         = document.getElementById('ar-key')?.value.trim().replace(/\s+/g,'_').toLowerCase();
+  const name        = document.getElementById('ar-name')?.value.trim();
+  const role        = document.querySelector('input[name="ar-role"]:checked')?.value || 'supporting';
+  const description = document.getElementById('ar-description')?.value.trim();
+  const aiGenerated = document.getElementById('ar-ai-generated')?.checked || false;
+  const workTypes   = [...document.querySelectorAll('input[name="ar-wt"]:checked')].map(el => el.value);
+
+  if (!key)  { toast('Key is required', 'error'); return; }
+  if (!name) { toast('Name is required', 'error'); return; }
+  try {
+    const reg = await _getAssetRegistry();
+    if (reg.find(a => a.key === key)) { toast(`Key "${key}" already exists`, 'error'); return; }
+    reg.push({ key, name, role, description, ai_generated: aiGenerated, work_types: workTypes });
+    await _saveAssetRegistry(reg);
+    toast('Asset created', 'success');
+    closeModal();
+    await loadSettingsModal();
+    switchSettingsTab('registry'); switchRegistryTab('assets');
+  } catch (e) { toast('Save failed: ' + e.message, 'error'); }
+}
+
+async function openEditAssetModal(idx) {
+  let reg;
+  try { reg = await _getAssetRegistry(); } catch (e) { toast('Could not load registry', 'error'); return; }
+  const a = reg[idx];
+  if (!a) { toast('Asset not found', 'error'); return; }
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">Edit Asset: ${escHtml(a.name)}</div>
+    ${_assetFormHTML(a)}
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="submitEditAsset(${idx})">Save Changes</button>
+    </div>`;
+  showModal();
+}
+
+async function submitEditAsset(idx) {
+  const name        = document.getElementById('ar-name')?.value.trim();
+  const role        = document.querySelector('input[name="ar-role"]:checked')?.value || 'supporting';
+  const description = document.getElementById('ar-description')?.value.trim();
+  const aiGenerated = document.getElementById('ar-ai-generated')?.checked || false;
+  const workTypes   = [...document.querySelectorAll('input[name="ar-wt"]:checked')].map(el => el.value);
+  if (!name) { toast('Name is required', 'error'); return; }
+  try {
+    const reg = await _getAssetRegistry();
+    const a = reg[idx];
+    if (!a) { toast('Asset not found', 'error'); return; }
+    reg[idx] = { ...a, name, role, description, ai_generated: aiGenerated, work_types: workTypes };
+    await _saveAssetRegistry(reg);
+    toast('Asset saved', 'success');
+    closeModal();
+    await loadSettingsModal();
+    switchSettingsTab('registry'); switchRegistryTab('assets');
+  } catch (e) { toast('Save failed: ' + e.message, 'error'); }
+}
+
+// ── AI Prompts Settings Pane ──────────────────────────────────────────────────
+
+function renderPromptsPane(prompts) {
+  if (!prompts.length) {
+    return `
+      <div class="settings-section-title">AI Generation Prompts</div>
+      <div style="color:var(--muted);font-size:13px;margin-bottom:16px;">No prompts configured yet.</div>
+      <button class="module-asset-action" style="border-color:var(--accent);color:var(--accent);" onclick="openNewPromptModal()">+ New Prompt</button>`;
+  }
+  const rows = prompts.map((p, idx) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);">
+      <div>
+        <div style="font-size:13px;font-weight:600;">${escHtml(p.name || p.asset_type)}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px;">
+          Type: <code>${escHtml(p.asset_type)}</code> &nbsp;·&nbsp;
+          Active: Version ${escHtml(p.active_version || 'A')}
+          ${p.supports_reference_image ? ' &nbsp;·&nbsp; Ref image ✓' : ''}
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;">
+        <button class="module-asset-action" style="font-size:11px;padding:4px 10px;"
+                onclick="openEditPromptModal(${idx})">Edit</button>
+        <button class="module-asset-action" style="font-size:11px;padding:4px 10px;border-color:var(--danger,#f44336);color:var(--danger,#f44336);"
+                onclick="deletePromptEntry(${idx})">Delete</button>
+      </div>
+    </div>`).join('');
+  return `
+    <div class="settings-section-title">AI Generation Prompts</div>
+    <div style="color:var(--muted);font-size:12px;margin-bottom:12px;">
+      These prompts drive asset generation. Use <code>{{prose}}</code> for module text.<br>
+      For <code>broadcast_image</code>: the prompt is appended as a style suffix to each post's image prompt.
+    </div>
+    ${rows}
+    <button class="module-asset-action" style="border-color:var(--accent);color:var(--accent);margin-top:14px;"
+            onclick="openNewPromptModal()">+ New Prompt</button>`;
+}
+
+async function _getPromptsFromPromo() {
+  const s = await GET('/api/promo/settings');
+  return { settings: s, prompts: s.asset_prompts || [] };
+}
+
+async function _savePromptsToPromo(prompts) {
+  const { settings } = await _getPromptsFromPromo();
+  settings.asset_prompts = prompts;
+  await PUT('/api/promo/settings', settings);
+  state.promoSettings = null; // invalidate cache
+}
+
+async function deletePromptEntry(idx) {
+  if (!confirm('Delete this prompt? This cannot be undone.')) return;
+  try {
+    const { prompts } = await _getPromptsFromPromo();
+    prompts.splice(idx, 1);
+    await _savePromptsToPromo(prompts);
+    toast('Prompt deleted', 'success');
+    await loadSettingsModal();
+    switchSettingsTab('prompts');
+  } catch (e) { toast('Delete failed: ' + e.message, 'error'); }
+}
+
+function openNewPromptModal() {
+  const KNOWN_TYPES = ['blurb', 'tagline', 'synopsis', 'header_image_prompt', 'broadcast_image'];
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">New Prompt</div>
+    <div class="form-group">
+      <label class="form-label">Asset Type</label>
+      <select class="form-input" id="np-asset-type" onchange="
+        document.getElementById('np-custom-wrap').style.display=this.value==='__custom'?'block':'none'">
+        ${KNOWN_TYPES.map(t => `<option value="${t}">${escHtml(t)}</option>`).join('')}
+        <option value="__custom">Custom…</option>
+      </select>
+      <div id="np-custom-wrap" style="display:none;margin-top:6px;">
+        <input class="form-input" id="np-asset-type-custom" placeholder="e.g. my_custom_type"/>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Display Name</label>
+      <input class="form-input" id="np-name" placeholder="e.g. Chapter Synopsis"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Description <span style="color:var(--muted);font-size:11px;">(optional)</span></label>
+      <textarea class="form-input" id="np-description" rows="2" placeholder="What does this prompt produce?"></textarea>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Version A Label</label>
+      <input class="form-input" id="np-ver-label" value="Version A"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Prompt Text <span style="color:var(--muted);font-size:11px;">Use {{prose}} as placeholder for module content</span></label>
+      <textarea class="form-input" id="np-prompt" rows="10" placeholder="Enter your full prompt here…"></textarea>
+    </div>
+    <div class="form-group">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+        <input type="checkbox" id="np-ref-image" style="width:14px;height:14px;accent-color:var(--accent);"/>
+        <span class="form-label" style="margin:0;">Supports reference image</span>
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="submitNewPrompt()">Create Prompt</button>
+    </div>`;
+  showModal();
+}
+
+async function submitNewPrompt() {
+  const typeEl = document.getElementById('np-asset-type');
+  const assetType = typeEl.value === '__custom'
+    ? (document.getElementById('np-asset-type-custom')?.value.trim() || '')
+    : typeEl.value;
+  const name           = document.getElementById('np-name')?.value.trim() || '';
+  const description    = document.getElementById('np-description')?.value.trim() || '';
+  const verLabel       = document.getElementById('np-ver-label')?.value.trim() || 'Version A';
+  const promptText     = document.getElementById('np-prompt')?.value.trim() || '';
+  const supportsRef    = document.getElementById('np-ref-image')?.checked || false;
+
+  if (!assetType) { toast('Asset type is required', 'error'); return; }
+  if (!name)      { toast('Display name is required', 'error'); return; }
+  if (!promptText){ toast('Prompt text is required', 'error'); return; }
+
+  try {
+    const { prompts } = await _getPromptsFromPromo();
+    const dup = prompts.findIndex(p => p.asset_type === assetType);
+    if (dup >= 0) {
+      if (!confirm(`A prompt for "${assetType}" already exists. Replace it?`)) return;
+      prompts.splice(dup, 1);
+    }
+    prompts.push({
+      asset_type: assetType,
+      name,
+      description,
+      supports_reference_image: supportsRef,
+      active_version: 'A',
+      versions: {
+        A: { label: verLabel, prompt: promptText },
+        B: { label: 'Version B', prompt: '' },
+        C: { label: 'Version C', prompt: '' },
+      }
+    });
+    await _savePromptsToPromo(prompts);
+    toast('Prompt created', 'success');
+    closeModal();
+    await loadSettingsModal();
+    switchSettingsTab('prompts');
+  } catch (e) { toast('Save failed: ' + e.message, 'error'); }
+}
+
+async function openEditPromptModal(idx) {
+  let prompts;
+  try { ({ prompts } = await _getPromptsFromPromo()); }
+  catch (e) { toast('Could not load prompts', 'error'); return; }
+  const p = prompts[idx];
+  if (!p) { toast('Prompt not found', 'error'); return; }
+
+  window._editPromptIdx = idx;
+  window._editPromptDrafts = {
+    A: { label: p.versions?.A?.label || 'Version A', prompt: p.versions?.A?.prompt || '' },
+    B: { label: p.versions?.B?.label || 'Version B', prompt: p.versions?.B?.prompt || '' },
+    C: { label: p.versions?.C?.label || 'Version C', prompt: p.versions?.C?.prompt || '' },
+  };
+  window._editPromptActiveVer  = p.active_version || 'A';
+  window._editPromptCurrentTab = 'A';
+  window._editPromptMeta = { name: p.name || '', description: p.description || '', supports_reference_image: !!p.supports_reference_image };
+
+  _renderEditPromptContent('A');
+  showModal();
+}
+
+function _renderEditPromptContent(activeTab) {
+  const d    = window._editPromptDrafts;
+  const meta = window._editPromptMeta;
+  const activeVer = window._editPromptActiveVer;
+  const idx = window._editPromptIdx;
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">Edit Prompt</div>
+    <div class="form-group">
+      <label class="form-label">Display Name</label>
+      <input class="form-input" id="ep-name" value="${escHtml(meta.name)}"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Description</label>
+      <textarea class="form-input" id="ep-description" rows="2">${escHtml(meta.description)}</textarea>
+    </div>
+    <div class="form-group">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+        <input type="checkbox" id="ep-ref-image" ${meta.supports_reference_image ? 'checked' : ''} style="width:14px;height:14px;accent-color:var(--accent);"/>
+        <span class="form-label" style="margin:0;">Supports reference image</span>
+      </label>
+    </div>
+    <div style="margin-bottom:8px;display:flex;align-items:center;gap:10px;">
+      <span class="form-label" style="margin:0;">Active Version:</span>
+      <span id="ep-active-ver-badge" style="font-weight:700;color:var(--accent);">Version ${escHtml(activeVer)}</span>
+    </div>
+    <div style="display:flex;gap:4px;margin-bottom:12px;">
+      ${['A','B','C'].map(v => `
+        <button onclick="switchPromptVerTab('${v}')"
+                style="flex:1;padding:6px;font-size:12px;border:1px solid var(--border);background:${v === activeTab ? 'var(--accent)' : 'var(--card)'};color:${v === activeTab ? '#fff' : 'var(--fg)'};cursor:pointer;border-radius:4px;font-family:var(--font-mono);">
+          ${escHtml(d[v].label || ('Version ' + v))}
+          ${activeVer === v ? '<br><span style="font-size:9px;opacity:0.8;">●active</span>' : ''}
+        </button>`).join('')}
+    </div>
+    <div id="ep-ver-editor">${_renderPromptVerEditor(activeTab)}</div>
+    <button class="module-asset-action" style="font-size:11px;padding:5px 12px;margin-bottom:16px;border-color:var(--accent);color:var(--accent);"
+            onclick="setActivePromptVer('${activeTab}')">Set Version ${escHtml(activeTab)} as Active</button>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="submitEditPrompt(${idx})">Save Changes</button>
+    </div>`;
+}
+
+function _renderPromptVerEditor(ver) {
+  const d = window._editPromptDrafts[ver];
+  return `
+    <div class="form-group">
+      <label class="form-label">Version Label</label>
+      <input class="form-input" id="ep-ver-label" value="${escHtml(d.label)}"
+             oninput="window._editPromptDrafts['${ver}'].label=this.value"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Prompt Text <span style="color:var(--muted);font-size:11px;">Use {{prose}} as placeholder</span></label>
+      <textarea class="form-input" id="ep-ver-prompt" rows="10"
+                oninput="window._editPromptDrafts['${ver}'].prompt=this.value">${escHtml(d.prompt)}</textarea>
+    </div>`;
+}
+
+function _savePromptVerDraft() {
+  const currentTab = window._editPromptCurrentTab;
+  const labelEl  = document.getElementById('ep-ver-label');
+  const promptEl = document.getElementById('ep-ver-prompt');
+  if (labelEl)  window._editPromptDrafts[currentTab].label  = labelEl.value;
+  if (promptEl) window._editPromptDrafts[currentTab].prompt = promptEl.value;
+  // Save meta fields too
+  const nameEl = document.getElementById('ep-name');
+  const descEl = document.getElementById('ep-description');
+  const refEl  = document.getElementById('ep-ref-image');
+  if (nameEl) window._editPromptMeta.name = nameEl.value;
+  if (descEl) window._editPromptMeta.description = descEl.value;
+  if (refEl)  window._editPromptMeta.supports_reference_image = refEl.checked;
+}
+
+function switchPromptVerTab(ver) {
+  _savePromptVerDraft();
+  window._editPromptCurrentTab = ver;
+  _renderEditPromptContent(ver);
+}
+
+function setActivePromptVer(ver) {
+  _savePromptVerDraft();
+  window._editPromptActiveVer = ver;
+  const badge = document.getElementById('ep-active-ver-badge');
+  if (badge) badge.textContent = 'Version ' + ver;
+  toast('Version ' + ver + ' will be active on save', 'success');
+}
+
+async function submitEditPrompt(idx) {
+  _savePromptVerDraft();
+  const name        = window._editPromptMeta.name;
+  const description = window._editPromptMeta.description;
+  const supportsRef = window._editPromptMeta.supports_reference_image;
+  if (!name) { toast('Display name is required', 'error'); return; }
+  try {
+    const { prompts } = await _getPromptsFromPromo();
+    const p = prompts[idx];
+    if (!p) { toast('Prompt not found', 'error'); return; }
+    p.name        = name;
+    p.description = description;
+    p.supports_reference_image = supportsRef;
+    p.active_version = window._editPromptActiveVer;
+    p.versions = {
+      A: { label: window._editPromptDrafts.A.label, prompt: window._editPromptDrafts.A.prompt },
+      B: { label: window._editPromptDrafts.B.label, prompt: window._editPromptDrafts.B.prompt },
+      C: { label: window._editPromptDrafts.C.label, prompt: window._editPromptDrafts.C.prompt },
+    };
+    await _savePromptsToPromo(prompts);
+    toast('Prompt saved', 'success');
+    closeModal();
+    await loadSettingsModal();
+    switchSettingsTab('prompts');
+  } catch (e) { toast('Save failed: ' + e.message, 'error'); }
+}
+
+// ── Website Connection ────────────────────────────────────────────────────────
 
 async function testWebsiteConnection() {
   const statusEl = document.getElementById('website-connection-status');
@@ -1144,10 +2651,6 @@ async function testWebsiteConnection() {
   } catch (e) {
     if (statusEl) statusEl.innerHTML = `<span style="color:var(--p1);">✗ ${escHtml(e.message)}</span>`;
   }
-}
-
-function escHtml(str) {
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 async function loadHubSummary() {
@@ -1964,37 +3467,7 @@ function toggleWebPublishSelection(id, checked) {
   renderPublishingDashboard();
 }
 
-async function publishChapterToWebsite(id, btn) {
-  const entry = state.contentPipeline.find(x => x.id === id);
-  if (!entry) return;
-  if (!entry.assets?.prose?.trim()) {
-    toast('Add chapter text first (Edit Assets → Chapter Text)', 'error');
-    return;
-  }
-  const origText  = btn.textContent;
-  btn.disabled    = true;
-  btn.textContent = '…';
-  try {
-    const res = await POST('/api/website/publish', { entry_id: id });
-    if (res.ok) {
-      const i = state.contentPipeline.findIndex(x => x.id === id);
-      if (i >= 0) {
-        state.contentPipeline[i].website_status   = 'live';
-        state.contentPipeline[i].website_revision = state.contentPipeline[i].revision || 1;
-      }
-      toast('Chapter published to website ✓', 'success');
-      renderPublishingDashboard();
-    } else {
-      toast(res.error || 'Publish failed', 'error');
-      btn.disabled    = false;
-      btn.textContent = origText;
-    }
-  } catch (err) {
-    toast('Publish failed', 'error');
-    btn.disabled    = false;
-    btn.textContent = origText;
-  }
-}
+// publishChapterToWebsite is defined earlier (line ~814) — this duplicate removed.
 
 async function publishSelectedToWebsite() {
   const ids = [..._selectedForWebPublish];
@@ -4053,21 +5526,7 @@ async function saveSettings() {
   } catch (e) { toast('Could not save settings', 'error'); }
 }
 
-async function testWebsiteConnection() {
-  const indicator = document.getElementById('website-status-indicator');
-  if (indicator) indicator.textContent = 'Checking…';
-  try {
-    const res = await GET('/api/website/status');
-    if (indicator) {
-      indicator.textContent = res.ok ? '✓ Connected' : '✗ ' + (res.error || 'Not connected');
-      indicator.style.color = res.ok ? 'var(--success,#4caf50)' : 'var(--danger,#f44336)';
-    }
-  } catch (err) {
-    if (indicator) { indicator.textContent = '✗ Request failed'; indicator.style.color = 'var(--danger,#f44336)'; }
-  }
-}
-
-// ── Prompt Templates Manager ──────────────────────────────────────────────────
+// ── Prompt Templates Manager (legacy modal — kept for backward compat) ────────
 
 function openPromptsModal() {
   const prompts = state.settings.asset_prompts || [];
@@ -4079,7 +5538,7 @@ function openPromptsModal() {
     <div id="prompt-list">
       ${prompts.length ? prompts.map((p, i) => renderPromptCard(p, i)).join('') : '<div style="color:var(--muted);font-size:13px;">No prompts yet.</div>'}
     </div>
-    <button class="btn-secondary" style="width:100%;margin-top:16px;" onclick="openEditPromptModal(null)">+ Add New Prompt</button>
+    <button class="btn-secondary" style="width:100%;margin-top:16px;" onclick="_legacyOpenEditPromptModal(null)">+ Add New Prompt</button>
     <div class="modal-actions" style="margin-top:8px;">
       <button class="btn-secondary" onclick="openSettingsModal()">← Back to Settings</button>
       <button class="btn-secondary" onclick="closeModal()">Close</button>
@@ -4096,7 +5555,7 @@ function renderPromptCard(p, i) {
           <div class="prompt-card-desc-short">${esc(p.description.slice(0,100))}${p.description.length > 100 ? '…' : ''}</div>
         </div>
         <div class="prompt-card-actions">
-          <button class="btn-icon" title="Edit" onclick="event.stopPropagation();openEditPromptModal('${esc(p.id)}')">✎</button>
+          <button class="btn-icon" title="Edit" onclick="event.stopPropagation();_legacyOpenEditPromptModal('${esc(p.id)}')">✎</button>
           <button class="btn-icon btn-icon-danger" title="Delete" onclick="event.stopPropagation();deletePrompt('${esc(p.id)}')">✕</button>
           <span class="prompt-chevron" id="chevron-${esc(p.id)}">▾</span>
         </div>
@@ -4120,7 +5579,7 @@ function togglePromptCard(id) {
   if (chev) chev.textContent = open ? '▾' : '▴';
 }
 
-function openEditPromptModal(id) {
+function _legacyOpenEditPromptModal(id) {
   const prompts = state.settings.asset_prompts || [];
   const p = id ? prompts.find(x => x.id === id) : null;
   const isNew = !p;
@@ -4356,6 +5815,21 @@ async function saveConstants() {
 function showModal()  { document.getElementById('modal-overlay').classList.remove('hidden'); }
 function closeModal() { document.getElementById('modal-overlay').classList.add('hidden'); }
 
+// ── GitHub Push ───────────────────────────────────────────────────────────────
+
+async function gitPush() {
+  const btn = document.getElementById('btn-git-push');
+  if (btn) { btn.textContent = '↑…'; btn.disabled = true; }
+  try {
+    const r = await POST('/api/git/push', {});
+    toast(r.ok ? (r.message || 'Pushed to GitHub') : (r.error || 'Push failed'), r.ok ? 'success' : 'error');
+  } catch (e) {
+    toast('Push failed: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.textContent = '↑git'; btn.disabled = false; }
+  }
+}
+
 // ── Theme ─────────────────────────────────────────────────────────────────────
 
 function applyStoredTheme() {
@@ -4527,7 +6001,7 @@ async function loadBroadcastPostQueue() {
   }
 }
 
-async function loadPromoBooks() {
+async function loadPromoBooks(containerId) {
   try {
     // Ensure promo settings are loaded so word-count defaults in the UI are accurate
     if (!state.promoSettings || !state.promoSettings.ai_providers) {
@@ -4538,12 +6012,24 @@ async function loadPromoBooks() {
     }
     const data = await GET('/api/works');
     state.promoBooks = data.works || [];
-    renderPromoBookSerializer();
+    renderPromoBookSerializer(containerId);
   } catch (e) { toast("Could not load works", "error"); }
 }
 
+function _activeBookSerializerContainer() {
+  // Return whichever book-serializer container is currently visible
+  const works = document.getElementById('promo-view-works');
+  if (works && works.style.display !== 'none') return 'promo-view-works';
+  return 'promo-view-book-serializer';
+}
+
 async function loadPromoWorks() {
-  return loadPromoBooks();
+  return loadPromoBooks(_activeBookSerializerContainer());
+}
+
+async function loadPromotingWorks() {
+  // The Works tab IS the book serializer — use the full UI, rendered into promo-view-works
+  await loadPromoBooks('promo-view-works');
 }
 
 async function loadPromoSettings() {
@@ -4620,7 +6106,10 @@ function addContactModal() {
     <div class="modal-title">Add New Contact</div>
     <div class="form-group">
       <label class="form-label">Name *</label>
-      <input class="form-input" id="con-name" type="text" placeholder="Full Name"/>
+      <div style="position:relative;">
+        <input class="form-input" id="con-name" type="text" placeholder="Full Name" autocomplete="off"/>
+        <div id="con-suggestions" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--bg);border:1px solid var(--border);border-radius:4px;z-index:200;max-height:200px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,0.15);"></div>
+      </div>
       <div id="con-err-name" class="inline-error" style="color:var(--p1);font-size:11px;display:none;">Name is required</div>
     </div>
     <div class="form-group">
@@ -4646,6 +6135,7 @@ function addContactModal() {
       <button class="btn-primary" onclick="saveNewContact()">Save Contact</button>
     </div>`;
   showModal();
+  _attachMacOSAutocomplete('con-name', 'con-phone', 'con-email', 'con-suggestions');
 }
 
 async function saveNewContact() {
@@ -5417,53 +6907,7 @@ async function deleteModuleFromManage(moduleId) {
 // Backwards-compat alias
 async function deleteChapterFromManage(id) { return deleteModuleFromManage(id); }
 
-function openAddModuleModal(workId) {
-  document.getElementById('modal-content').innerHTML = `
-    <div class="modal-title">Add Module</div>
-    <div class="form-group" style="margin-top:16px;">
-      <label class="form-label">Module Title *</label>
-      <input type="text" id="new-mod-title" class="form-input" placeholder="e.g. Chapter 4: The Return"/>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Status</label>
-      <select id="new-mod-status" class="form-input">
-        <option value="draft">Draft</option>
-        <option value="review">Review</option>
-        <option value="final">Final</option>
-      </select>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Prose (optional)</label>
-      <textarea id="new-mod-prose" class="form-textarea" style="min-height:150px;" placeholder="Paste source content here…"></textarea>
-    </div>
-    <div class="modal-actions" style="margin-top:24px;">
-      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn-primary" onclick="submitAddModule('${workId}')">Add Module</button>
-    </div>
-  `;
-  showModal();
-}
-
-async function submitAddModule(workId) {
-  const title = document.getElementById('new-mod-title').value.trim();
-  if (!title) { toast('Title required', 'error'); return; }
-  try {
-    const res = await fetch('/api/modules', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title,
-        work_id: workId,
-        status:  document.getElementById('new-mod-status').value,
-        prose:   document.getElementById('new-mod-prose').value.trim()
-      })
-    });
-    if (!res.ok) { toast('Could not add module', 'error'); return; }
-    toast('Module added', 'success');
-    closeModal();
-    loadCommandCenter();
-  } catch (e) { toast('Could not add module', 'error'); }
-}
+// openAddModuleModal and submitAddModule defined above (domain model versions)
 
 async function deleteWorkFromManage(workId) {
   if (!confirm('EXTREME WARNING: This will delete the work, all its modules, and all associated assets. Continue?')) return;
@@ -5916,8 +7360,8 @@ function toggleAllCC(expand) {
 
 // ── PROMOTION MACHINE: Book Serializer Sub-tab ────────────────────────────────
 
-function renderPromoBookSerializer() {
-  const container = document.getElementById('promo-view-book-serializer');
+function renderPromoBookSerializer(containerId) {
+  const container = document.getElementById(containerId || 'promo-view-book-serializer');
   if (!container) return;
 
   const selectedBookId = state.selectedBookId;
@@ -5952,9 +7396,28 @@ async function renderBookDetail(bookId) {
   const panel = document.getElementById('book-detail-panel');
   if (!book || !panel) return;
 
-  // Defaults from settings
-  const targetWordCount = state.promoSettings.serializer_defaults?.target_chunk_word_count || 400;
-  const maxWordCount    = state.promoSettings.serializer_defaults?.max_chunk_word_count || 550;
+  // Detect novel: profile with num_chunks === null (auto/sliding-window mode)
+  const bookProfile = (state.promoSettings?.serializer_profiles || []).find(p => p.id === book.profile_id);
+  const isNovel = !!(bookProfile && bookProfile.num_chunks === null);
+
+  // Fetch pipeline modules for the Source Chapter dropdown; cache in state for queue modal
+  let pipelineModules = [];
+  try {
+    pipelineModules = await GET('/api/content-pipeline');
+    state.contentPipeline = pipelineModules;
+  } catch(e) {}
+
+  const moduleOptions = pipelineModules.map(m =>
+    `<option value="${esc(m.id)}" ${book.pipeline_module_id === m.id ? 'selected' : ''}>${esc(m.chapter)} — ${esc(m.book || '')}</option>`
+  ).join('');
+
+  const linkedModule  = pipelineModules.find(m => m.id === book.pipeline_module_id);
+  const linkedHasImg  = linkedModule && (linkedModule.assets || {}).header_image_path;
+  const imgNote = linkedModule
+    ? (linkedHasImg
+        ? `<span style="font-size:11px;color:var(--success);margin-left:8px;">✓ Header image ready</span>`
+        : `<span style="font-size:11px;color:var(--muted);margin-left:8px;">No header image yet — generate it in Producing</span>`)
+    : '';
 
   panel.innerHTML = `
     <div class="promo-settings-section">
@@ -5967,6 +7430,20 @@ async function renderBookDetail(bookId) {
         <div class="form-group" style="flex:1;"><label class="form-label">Patreon URL</label><input class="form-input" id="bk-patreon" value="${esc(book.patreon_url)}"/></div>
         <div class="form-group" style="flex:1;"><label class="form-label">Website URL</label><input class="form-input" id="bk-website" value="${esc(book.website_url)}"/></div>
       </div>
+      <div class="form-group">
+        <label class="form-label">Source Chapter <span style="font-weight:400;color:var(--muted);">— links this work to a chapter in your pipeline so its header image can be sent with the first chunk</span></label>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <select class="form-input" id="bk-pipeline-module" style="flex:1;">
+            <option value="">— No chapter linked —</option>
+            ${moduleOptions}
+          </select>
+          ${imgNote}
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Post Header <span style="font-weight:400;color:var(--muted);">— prepended to every queued post (e.g. SHORT STORY TIME)</span></label>
+        <input class="form-input" id="bk-post-header" value="${esc(book.post_header || '')}" placeholder="e.g. SHORT STORY TIME"/>
+      </div>
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <button class="btn-primary" onclick="updateBookSettings('${book.id}')">Save Settings</button>
         <button class="btn-secondary" style="color:var(--danger);border-color:rgba(255,100,100,0.3);" onclick="deleteBook('${book.id}')">Delete Work</button>
@@ -5974,31 +7451,34 @@ async function renderBookDetail(bookId) {
     </div>
 
     <div class="promo-settings-section">
-      <h3>Ingest Content</h3>
-      <div style="display:flex;gap:12px;margin-bottom:12px;">
-        <button class="btn-secondary active" id="btn-ing-paste" onclick="toggleIngestMode('paste')">Paste Text</button>
-        <button class="btn-secondary" id="btn-ing-file" onclick="toggleIngestMode('file')">Upload File</button>
-      </div>
-      <div id="ing-paste-box">
-        <textarea class="form-textarea" id="bk-ingest-text" style="min-height:150px;" placeholder="Paste the book content here..."></textarea>
-      </div>
-      <div id="ing-file-box" style="display:none;">
-        <input type="file" id="bk-ingest-file" accept=".txt,.rtf,.docx"/>
-        <div style="font-size:11px;color:var(--muted);margin-top:6px;">Supported: .txt \u00b7 .rtf \u00b7 .docx (Word)</div>
-      </div>
-      <div class="promo-action-bar" style="margin-top:12px;">
-        <div class="form-group" style="width:140px;"><label class="form-label">Target Words</label><input class="form-input" id="bk-target" type="number" value="${targetWordCount}"/></div>
-        <div class="form-group" style="width:140px;"><label class="form-label">Max Words</label><input class="form-input" id="bk-max" type="number" value="${maxWordCount}"/></div>
-      </div>
-      <button class="btn-primary" id="btn-bk-serialize" onclick="serializeBookContent('${book.id}')">Serialize Content</button>
+      <h3>Serialize</h3>
+      ${linkedModule ? `
+        <div style="padding:10px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;font-size:13px;margin-bottom:14px;">
+          <span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">Prose source</span><br>
+          <span style="font-weight:600;">${esc(linkedModule.chapter)}</span>
+          <span style="color:var(--muted);margin-left:6px;">${esc(linkedModule.book || '')}</span>
+        </div>
+        <div class="form-group" style="margin-bottom:14px;">
+          <label class="form-label">Serialization Profile</label>
+          <select class="form-input" id="bk-profile">
+            <option value="">— Select a profile —</option>
+            ${(state.promoSettings?.serializer_profiles || []).map(p => {
+              const chunks = p.num_chunks ? `${p.num_chunks} chunks` : 'Auto chunks';
+              const selected = book.profile_id === p.id ? 'selected' : '';
+              return `<option value="${esc(p.id)}" ${selected}>${esc(p.name)} — ${chunks}, ${p.target_words} words each</option>`;
+            }).join('')}
+          </select>
+        </div>
+        <button class="btn-primary" id="btn-bk-serialize" onclick="serializeBookContent('${book.id}')">Serialize Content</button>
+      ` : `
+        <p style="color:var(--muted);font-size:13px;margin:0;">Link a source chapter in Work Settings above, then return here to serialize.</p>
+      `}
     </div>
 
     <div class="promo-settings-section" style="border-bottom:none;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
         <h3 style="margin-bottom:0;">Chapters / Modules (${book.chunks?.length || 0})</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn-secondary" style="font-size:11px;" onclick="openImportChaptersModal('${book.id}')">↑ Import Chapters</button>
-          <button class="btn-secondary" style="font-size:11px;" onclick="openManualModuleModal('${book.id}')">+ Add Manual</button>
           ${book.chunks?.length ? `
             <button class="btn-secondary" style="font-size:11px;" onclick="openBulkGenerateModal('${book.id}')">⚡ Generate Assets</button>
             <button class="btn-secondary" style="font-size:11px;" onclick="openHeaderPromptsModal('${book.id}')">🖼 Header Prompts</button>
@@ -6008,12 +7488,52 @@ async function renderBookDetail(bookId) {
           ` : ''}
         </div>
       </div>
-      ${!book.chunks || book.chunks.length === 0 ? '<p style="color:var(--muted);font-size:13px;">No modules yet. Use "Import Chapters" to bulk-import your manuscript, or "Ingest Content" to serialize it into WA posts.</p>' : `
+      ${!book.chunks || book.chunks.length === 0 ? '<p style="color:var(--muted);font-size:13px;">No chunks yet. Serialize the linked chapter above to generate WA post chunks.</p>' : `
         <div class="promo-chunk-list">
-          ${book.chunks.map((c, i) => `
+          ${book.chunks.map((c, i) => {
+            const hasChunkImg = !!c.header_image_path;
+            const imgThumb = hasChunkImg
+              ? `<img src="${esc(c.header_image_path)}" style="width:60px;height:40px;object-fit:cover;border-radius:4px;border:1px solid var(--border);flex-shrink:0;" title="Chunk header image">`
+              : '';
+
+            const scheduleInfo = c.status === 'queued' ? (() => {
+              if (isNovel && c.vip_scheduled_at) {
+                const vipTime     = new Date(c.vip_scheduled_at).toLocaleString();
+                const channelTime = c.channel_scheduled_at ? new Date(c.channel_scheduled_at).toLocaleString() : '—';
+                return `<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6;">
+                  <span style="color:var(--success);">VIP Group:</span> ${vipTime}<br>
+                  <span style="color:var(--accent);">WA Channel:</span> ${channelTime}
+                </div>`;
+              } else if (c.message_id) {
+                return '';
+              }
+              return '';
+            })() : '';
+
+            const actionBar = (() => {
+              if (c.status === 'pending') {
+                return `<div style="display:flex;gap:8px;flex-wrap:wrap;">
+                  <button class="btn-secondary" style="font-size:11px;" onclick="queueWorkModuleModal('${book.id}', '${c.id}')">Queue...</button>
+                  ${isNovel ? `<button class="btn-secondary" style="font-size:11px;" id="btn-img-${c.id}" onclick="generateChunkImage('${book.id}', '${c.id}')">
+                    ${hasChunkImg ? 'Regenerate Image' : 'Generate Image'}
+                  </button>` : ''}
+                </div>`;
+              } else if (c.status === 'queued') {
+                return `<div style="display:flex;gap:8px;flex-wrap:wrap;">
+                  <button class="btn-secondary" style="font-size:11px;color:var(--muted);" onclick="unqueueChunk('${book.id}', '${c.id}')">Unqueue</button>
+                  ${isNovel ? `<button class="btn-secondary" style="font-size:11px;" id="btn-img-${c.id}" onclick="generateChunkImage('${book.id}', '${c.id}')">
+                    ${hasChunkImg ? 'Regenerate Image' : 'Generate Image'}
+                  </button>` : ''}
+                </div>`;
+              }
+              return '';
+            })();
+
+            return `
             <div class="promo-chunk-item">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                  ${imgThumb}
                   ${c.title ? `<span style="font-weight:bold;font-size:13px;">${esc(c.title)}</span>` : `<span style="font-weight:bold;font-size:14px;">Module ${i+1}</span>`}
                   <span class="promo-badge" style="background:var(--surface2);border:1px solid var(--border2); color:var(--text); opacity:0.7;">${c.word_count} w</span>
                   <span class="promo-chunk-status-${c.status}" style="font-family:var(--font-mono);font-size:9px;text-transform:uppercase;">● ${c.status}</span>
@@ -6029,13 +7549,10 @@ async function renderBookDetail(bookId) {
               </div>
               <div class="full-chunk-content" style="display:none;font-size:13px;white-space:pre-wrap;background:var(--bg);padding:12px;border-radius:4px;margin-bottom:10px;">${esc(c.content)}</div>
               ${c.cliffhanger_note ? `<div style="font-size:11px;font-style:italic;color:var(--muted2);margin-bottom:12px;">CLIFFHANGER: ${esc(c.cliffhanger_note)}</div>` : ''}
-              ${c.status === 'pending' ? `
-                <div style="display:flex;gap:8px;">
-                  <button class="btn-secondary" style="font-size:11px;" onclick="queueWorkModuleModal('${book.id}', '${c.id}')">Queue...</button>
-                </div>
-              ` : ''}
-            </div>
-          `).join('')}
+              ${scheduleInfo}
+              ${actionBar}
+            </div>`;
+          }).join('')}
         </div>
       `}
     </div>`;
@@ -6043,7 +7560,11 @@ async function renderBookDetail(bookId) {
 
 function selectBook(id) {
   state.selectedBookId = id;
-  renderPromoBookSerializer();
+  // Render into whichever container is currently visible
+  const activeContainer = document.getElementById('promo-view-works')?.style.display !== 'none'
+    ? 'promo-view-works'
+    : 'promo-view-book-serializer';
+  renderPromoBookSerializer(activeContainer);
 }
 
 function toggleChunkContent(link) {
@@ -6053,10 +7574,34 @@ function toggleChunkContent(link) {
   link.textContent = isHidden ? 'Hide Full' : 'Show Full';
 }
 
-function openNewBookModal() {
+async function openNewBookModal() {
+  // Always fetch fresh pipeline data — don't rely on cached state
+  let liveModules = [];
+  try {
+    const pipeline = await GET('/api/content-pipeline');
+    state.contentPipeline = pipeline;
+    liveModules = pipeline.filter(m => m.website_status === 'live');
+  } catch(e) {}
+
+  // Build pipeline module dropdown — only modules with website_status === 'live'
+  const pipelineOptions = liveModules.map(m => {
+    const label = `${esc(m.chapter)} — ${esc(m.book || '')}`;
+    return `<option value="${esc(m.id)}">${label}</option>`;
+  }).join('');
+  const pipelineSelect = liveModules.length
+    ? `<div class="form-group">
+        <label class="form-label">Source Chapter (optional — imports title &amp; links pipeline)</label>
+        <select class="form-input" id="new-bk-pipeline-module" onchange="onNewBookPipelineChange()">
+          <option value="">— None (create from scratch) —</option>
+          ${pipelineOptions}
+        </select>
+      </div>`
+    : '';
+
   document.getElementById('modal-content').innerHTML = `
     <div class="modal-title">Add New Work</div>
-    <div class="form-group"><label class="form-label">Title *</label><input class="form-input" id="new-bk-title"/></div>
+    ${pipelineSelect}
+    <div class="form-group"><label class="form-label">Title *</label><input class="form-input" id="new-bk-title" placeholder="Promo work title"/></div>
     <div class="form-group"><label class="form-label">Author</label><input class="form-input" id="new-bk-author"/></div>
     <div class="form-group"><label class="form-label">Patreon URL</label><input class="form-input" id="new-bk-patreon"/></div>
     <div class="form-group"><label class="form-label">Website URL</label><input class="form-input" id="new-bk-website"/></div>
@@ -6067,16 +7612,49 @@ function openNewBookModal() {
   showModal();
 }
 
+function onNewBookPipelineChange() {
+  const sel = document.getElementById('new-bk-pipeline-module');
+  if (!sel) return;
+  const moduleId = sel.value;
+  if (!moduleId) return;
+  const module = (state.contentPipeline || []).find(m => m.id === moduleId);
+  if (!module) return;
+  // Auto-fill title
+  const titleInput = document.getElementById('new-bk-title');
+  if (titleInput && !titleInput.value.trim()) {
+    titleInput.value = module.chapter || '';
+  }
+  // Auto-fill website URL from publish info
+  const websiteInput = document.getElementById('new-bk-website');
+  if (websiteInput && !websiteInput.value.trim()) {
+    const pubInfo = module.website_publish_info || {};
+    const url = pubInfo.chapter_url || '';
+    if (url) websiteInput.value = url;
+  }
+}
+
 async function saveNewBook() {
   const title = document.getElementById('new-bk-title').value.trim();
   if (!title) { toast('Title required', 'error'); return; }
-  
+  const pipelineModuleId = document.getElementById('new-bk-pipeline-module')?.value || '';
+
+  // Resolve website_url: from field or from pipeline module
+  let websiteUrl = document.getElementById('new-bk-website').value.trim();
+  if (!websiteUrl && pipelineModuleId) {
+    const module = (state.contentPipeline || []).find(m => m.id === pipelineModuleId);
+    if (module) {
+      const pubInfo = module.website_publish_info || {};
+      websiteUrl = pubInfo.chapter_url || '';
+    }
+  }
+
   try {
     const res = await POST('/api/works', {
       title,
       author: document.getElementById('new-bk-author').value.trim(),
       patreon_url: document.getElementById('new-bk-patreon').value.trim(),
-      website_url: document.getElementById('new-bk-website').value.trim()
+      website_url: websiteUrl,
+      pipeline_module_id: pipelineModuleId,
     });
     toast('Work added', 'success');
     closeModal();
@@ -6092,10 +7670,12 @@ async function saveNewBook() {
 async function updateBookSettings(id) {
   try {
     await PUT(`/api/works/${id}`, {
-      title: document.getElementById('bk-title').value.trim(),
-      author: document.getElementById('bk-author').value.trim(),
-      patreon_url: document.getElementById('bk-patreon').value.trim(),
-      website_url: document.getElementById('bk-website').value.trim()
+      title:              document.getElementById('bk-title').value.trim(),
+      author:             document.getElementById('bk-author').value.trim(),
+      patreon_url:        document.getElementById('bk-patreon').value.trim(),
+      website_url:        document.getElementById('bk-website').value.trim(),
+      pipeline_module_id: document.getElementById('bk-pipeline-module')?.value || '',
+      post_header:        document.getElementById('bk-post-header')?.value.trim() || '',
     });
     toast('Work updated', 'success');
     loadPromoWorks();
@@ -6183,10 +7763,32 @@ async function saveChunkEdit(bookId, chunkId) {
 async function deleteChunk(bookId, chunkId) {
   if (!confirm('Remove this module?')) return;
   try {
-    await DELETE(`/api/works/${bookId}/modules/${chunkId}`);
+    await DEL(`/api/works/${bookId}/modules/${chunkId}`);
     toast('Module removed', 'success');
     loadPromoWorks();
   } catch (e) { toast('Delete failed', 'error'); }
+}
+
+async function unqueueChunk(bookId, chunkId) {
+  if (!confirm('Unqueue this chunk? It will return to pending status. You must remove it from the EC2 server separately.')) return;
+  try {
+    await POST(`/api/works/${bookId}/modules/${chunkId}/unqueue`, {});
+    toast('Chunk unqueued — status reset to pending.', 'success');
+    loadPromoWorks();
+  } catch (e) { toast('Unqueue failed', 'error'); }
+}
+
+async function generateChunkImage(bookId, chunkId) {
+  const btn = document.getElementById(`btn-img-${chunkId}`);
+  if (btn) { btn.textContent = 'Generating…'; btn.disabled = true; }
+  try {
+    const res = await POST(`/api/works/${bookId}/modules/${chunkId}/generate-image`, {});
+    toast('Image generated.', 'success');
+    loadPromoWorks();
+  } catch (e) {
+    toast('Image generation failed: ' + e.message, 'error');
+    if (btn) { btn.textContent = 'Generate Image'; btn.disabled = false; }
+  }
 }
 
 function toggleIngestMode(mode) {
@@ -6201,35 +7803,31 @@ async function serializeBookContent(id) {
   btn.textContent = 'Serializing… this may take a moment';
   btn.disabled = true;
 
-  const target_words = document.getElementById('bk-target').value;
-  const max_words    = document.getElementById('bk-max').value;
-  const isPaste      = document.getElementById('btn-ing-paste').classList.contains('active');
+  const profileId = document.getElementById('bk-profile')?.value || '';
 
   try {
-    let res;
-    if (isPaste) {
-      const text = document.getElementById('bk-ingest-text').value.trim();
-      if (!text) { toast('Please paste some text first.', 'error'); return; }
-      res = await fetch(`/api/works/${id}/ingest`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ text, target_words, max_words })
-      });
-    } else {
-      const file = document.getElementById('bk-ingest-file').files[0];
-      if (!file) { toast('Please select a file (.txt, .rtf, or .docx).', 'error'); return; }
-      const allowed = ['.txt', '.rtf', '.docx'];
-      const ext = '.' + file.name.split('.').pop().toLowerCase();
-      if (!allowed.includes(ext)) {
-        toast(`Unsupported format: ${ext}. Use .txt, .rtf, or .docx.`, 'error');
-        return;
-      }
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('target_words', target_words);
-      formData.append('max_words', max_words);
-      res = await fetch(`/api/works/${id}/ingest`, { method: 'POST', body: formData });
+    if (!profileId) { toast('Select a serialization profile first.', 'error'); return; }
+
+    // Always pull prose from the linked pipeline module
+    const book = state.promoBooks.find(b => b.id === id);
+    if (!book?.pipeline_module_id) {
+      toast('Link a source chapter in Work Settings first.', 'error');
+      return;
     }
+    const pipeline = state.contentPipeline?.length
+      ? state.contentPipeline
+      : await GET('/api/content-pipeline');
+    const module = pipeline.find(m => m.id === book.pipeline_module_id);
+    if (!module) { toast('Linked pipeline module not found.', 'error'); return; }
+    const text = (module.assets?.prose || '').trim();
+    if (!text) { toast('The linked chapter has no prose yet. Add prose in Producing first.', 'error'); return; }
+
+    let res;
+    res = await fetch(`/api/works/${id}/ingest`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ text, profile_id: profileId })
+    });
 
     const contentType = res.headers.get('content-type') || '';
     const isJson = contentType.includes('application/json');
@@ -6257,14 +7855,69 @@ async function serializeBookContent(id) {
   }
 }
 
-function queueWorkModuleModal(workId, chunkId) {
+async function queueWorkModuleModal(workId, chunkId) {
   const book = state.promoBooks.find(b => b.id === workId);
   const urls = [];
   if (book?.patreon_url) urls.push({ label: 'Patreon', url: book.patreon_url });
   if (book?.website_url) urls.push({ label: 'Website', url: book.website_url });
 
+  // Detect novel profile
+  const bookProfile = (state.promoSettings?.serializer_profiles || []).find(p => p.id === book?.profile_id);
+  const isNovel = !!(bookProfile && bookProfile.num_chunks === null);
+
+  // Always fetch fresh pipeline data so header image checkbox is accurate
+  if (book?.pipeline_module_id) {
+    try {
+      const pipeline = await GET('/api/content-pipeline');
+      state.contentPipeline = pipeline;
+    } catch(e) {}
+  }
+
+  // Check chunk's own image first
+  const chunk = book?.chunks?.find(c => c.id === chunkId);
+  const hasChunkImg = !!(chunk?.header_image_path);
+
+  // Check pipeline module image as fallback
+  const hasPipelineLink = !!(book?.pipeline_module_id);
+  const pipelineModule  = hasPipelineLink
+    ? (state.contentPipeline || []).find(m => m.id === book.pipeline_module_id)
+    : null;
+  const hasPipelineImg = !!(pipelineModule && (pipelineModule.assets || {}).header_image_path);
+  const hasAnyImage    = hasChunkImg || hasPipelineImg;
+
+  // Image note
+  const imageNote = hasChunkImg
+    ? 'Using this chunk\'s generated image'
+    : hasPipelineImg
+      ? `Using chapter header: <em>${esc(pipelineModule?.chapter || '')}</em>`
+      : 'No image yet — generate one in the serializer first';
+
+  // Always show image row for novel works; only show for non-novel if there's a pipeline link
+  const showImageRow = isNovel || hasPipelineLink;
+
+  const imageRow = showImageRow ? `
+    <div class="form-group" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;">
+      <label style="display:flex;align-items:center;gap:10px;${hasAnyImage ? 'cursor:pointer;' : ''}margin:0;">
+        <input type="checkbox" id="queue-include-image" ${hasAnyImage ? 'checked' : 'disabled'}
+               style="width:16px;height:16px;accent-color:var(--accent);${hasAnyImage ? 'cursor:pointer;' : ''}">
+        <span style="font-size:13px;${hasAnyImage ? '' : 'opacity:0.5;'}">
+          Send with header image
+          <span style="font-size:11px;color:var(--muted);display:block;margin-top:2px;">
+            ${imageNote}
+          </span>
+        </span>
+      </label>
+    </div>` : '';
+
+  const novelNote = isNovel ? `
+    <div style="background:var(--bg2);border:1px solid var(--accent);border-radius:6px;padding:10px 12px;font-size:12px;color:var(--muted);margin-bottom:14px;">
+      <strong style="color:var(--accent);">Novel delivery:</strong>
+      VIP Group receives this chunk first. WA Channel receives it 24 hours later.
+    </div>` : '';
+
   document.getElementById('modal-content').innerHTML = `
     <div class="modal-title">Queue Chunk</div>
+    ${novelNote}
     <p style="margin:12px 0;font-size:13px;color:var(--muted);">
       This chunk will be auto-scheduled into the next available story slot.
     </p>
@@ -6275,6 +7928,7 @@ function queueWorkModuleModal(workId, chunkId) {
         ${urls.map(u => `<option value="${esc(u.url)}">${u.label}: ${esc(u.url)}</option>`).join('')}
       </select>
     </div>
+    ${imageRow}
     <div class="modal-actions">
       <button class="btn-secondary" onclick="closeModal()">Cancel</button>
       <button class="btn-primary" onclick="submitQueueWorkModule('${workId}', '${chunkId}')">Queue</button>
@@ -6283,10 +7937,11 @@ function queueWorkModuleModal(workId, chunkId) {
 }
 
 async function submitQueueWorkModule(workId, chunkId) {
-  const ctaUrl = document.getElementById('queue-cta-url')?.value || '';
+  const ctaUrl       = document.getElementById('queue-cta-url')?.value || '';
+  const includeImage = document.getElementById('queue-include-image')?.checked || false;
   closeModal();
   try {
-    const res  = await POST(`/api/works/${workId}/modules/${chunkId}/queue`, { cta_url: ctaUrl });
+    const res  = await POST(`/api/works/${workId}/modules/${chunkId}/queue`, { cta_url: ctaUrl, include_header_image: includeImage });
     const when = res.scheduled_at ? new Date(res.scheduled_at).toLocaleString() : 'next available slot';
     if (res.ec2_synced === false) {
       toast(`Queued locally for ${when} — EC2 sync failed. May not send automatically.`, 'error');
@@ -6346,7 +8001,7 @@ async function processBatchQueue(bookId) {
   if (failed > 0) toast(`Queued ${queued}, ${failed} failed`, 'error');
   else toast(`Queued ${queued} chunks — scheduled automatically`, 'success');
   closeModal();
-  loadPromoBooks();
+  loadPromoBooks(_activeBookSerializerContainer());
 }
 
 // ── BULK CHAPTER IMPORT ───────────────────────────────────────────────────────
@@ -6804,8 +8459,9 @@ function updateScrivWordCount(moduleId, prose) {
 // ── PROMOTION MACHINE: Broadcast Posts Sub-tab ────────────────────────────────
 
 function renderBroadcastPosts() {
-  const container = document.getElementById(
-    'promo-view-broadcast-posts');
+  // Render into Producing/Proverbs tab (primary location)
+  const container = document.getElementById('producing-tab-proverbs')
+                 || document.getElementById('promo-view-broadcast-posts');
   if (!container) return;
 
   const total    = state.promoProverbs.length;
@@ -6813,11 +8469,11 @@ function renderBroadcastPosts() {
   const used     = total - unused;
   const pending  = state.promoProverbs.filter(
     p => p.queue_status === 'pending').length;
-  const approved = state.promoProverbs.filter(
-    p => p.queue_status === 'approved').length;
   const sent     = state.promoProverbs.filter(
     p => p.queue_status === 'sent').length;
 
+  // If filter was 'approved', reset to 'pending'
+  if (state.broadcastPostFilter === 'approved') state.broadcastPostFilter = 'pending';
   const filter   = state.broadcastPostFilter || 'pending';
   const filtered = state.promoProverbs.filter(
     p => p.queue_status === filter);
@@ -6833,9 +8489,6 @@ function renderBroadcastPosts() {
             ${unused} unused proverbs ·
             <span style="color:var(--p2); cursor:pointer;" onclick="state.broadcastPostFilter='pending';renderBroadcastPosts();">
               ${pending} pending
-            </span> ·
-            <span style="color:var(--p3); cursor:pointer;" onclick="state.broadcastPostFilter='approved';renderBroadcastPosts();">
-              ${approved} approved
             </span> ·
             ${sent} sent
           </div>
@@ -6864,18 +8517,11 @@ function renderBroadcastPosts() {
             style="font-size:12px;">
             + Generate One
           </button>
-          ${approved > 0 ? `
-          <button class="btn-primary"
-            onclick="sendNextApprovedPost()"
-            style="font-size:12px;background:var(--p3);
-                   border-color:var(--p3);">
-            📤 Send Next (${approved})
-          </button>` : ''}
           ${pending > 0 ? `
           <button class="btn-secondary"
             onclick="bulkApproveAll()"
             style="font-size:12px;">
-            ✓ Approve All (${pending})
+            📅 Queue All (${pending})
           </button>` : ''}
         </div>
       </div>
@@ -6897,7 +8543,7 @@ function renderBroadcastPosts() {
       </div>
 
       <div style="display:flex;gap:6px;margin-bottom:20px;">
-        ${['pending','approved','sent','rejected'].map(f => `
+        ${['pending','sent','rejected'].map(f => `
           <button class="btn-secondary
             ${filter === f ? ' active' : ''}"
             style="font-size:11px;padding:4px 10px;"
@@ -6905,7 +8551,6 @@ function renderBroadcastPosts() {
                      renderBroadcastPosts();">
             ${f.charAt(0).toUpperCase()+f.slice(1)}
             ${f === 'pending' ? `(${pending})`
-              : f === 'approved' ? `(${approved})`
               : f === 'sent' ? `(${sent})` : ''}
           </button>
         `).join('')}
@@ -7022,11 +8667,19 @@ function renderWaPostCard(p) {
         </div>
         <div class="broadcast-post-card-actions">
           ${p.queue_status === 'pending' ? `
-            <button class="btn-secondary"
+            <button class="btn-primary"
               style="font-size:11px;padding:3px 8px;
-                     color:var(--p3);"
-              onclick="approveWaPost('${p.id}')">
-              ✓ Approve
+                     background:var(--p2);
+                     border-color:var(--p2);"
+              onclick="queueProverbToOutbox('${p.id}')">
+              📅 Schedule
+            </button>
+            <button class="btn-primary"
+              style="font-size:11px;padding:3px 10px;
+                     background:var(--p3);
+                     border-color:var(--p3);"
+              onclick="sendThisPost('${p.id}')">
+              🚀 Send Now
             </button>
             <button class="btn-secondary"
               style="font-size:11px;padding:3px 8px;"
@@ -7039,37 +8692,23 @@ function renderWaPostCard(p) {
               onclick="rejectWaPost('${p.id}')">
               ✕
             </button>
-          ` : ''}
-          ${p.queue_status === 'approved' ? (() => {
-            const isQueued = (state.promoMessages || []).some(m => m.proverb_id === p.id && m.status === 'queued');
-            return `
-            ${isQueued ? `
-              <span style="font-size:11px;font-weight:700;color:var(--p2);padding:6px 8px;">
-                ✓ Queued
-              </span>
-            ` : `
-              <button class="btn-primary"
-                style="font-size:11px;padding:3px 8px;
-                       background:var(--p2);
-                       border-color:var(--p2);"
-                onclick="queueProverbToOutbox('${p.id}')">
-                📤 Send to Outbox
-              </button>
-            `}
-            <button class="btn-primary"
-              style="font-size:11px;padding:3px 12px;
-                     background:var(--p3);
-                     border-color:var(--p3);"
-              onclick="sendThisPost('${p.id}')">
-              🚀 Send Now
-            </button>
             <button class="btn-secondary"
               style="font-size:11px;padding:3px 8px;
-                     color:var(--muted);"
-              onclick="setPendingWaPost('${p.id}')">
-              ← Undo
+                     color:var(--danger,#f44336);
+                     border-color:var(--danger,#f44336);"
+              onclick="deleteWaPost('${p.id}')">
+              🗑
             </button>
-          `})() : ''}
+          ` : ''}
+          ${p.queue_status === 'rejected' ? `
+            <button class="btn-secondary"
+              style="font-size:11px;padding:3px 8px;
+                     color:var(--danger,#f44336);
+                     border-color:var(--danger,#f44336);"
+              onclick="deleteWaPost('${p.id}')">
+              🗑 Delete
+            </button>
+          ` : ''}
           ${p.queue_status === 'sent' ? `
             <span style="font-size:11px;
                          color:var(--muted);">
@@ -7127,38 +8766,92 @@ async function bulkGenerateWaPosts() {
 }
 
 async function singleGenerateWaPost() {
-  const btn = document.getElementById(
-    'btn-single-generate');
+  const btn = document.getElementById('btn-single-generate');
   btn.disabled = true;
-  btn.textContent = 'Generating...';
+  btn.textContent = 'Previewing...';
   try {
-    const res = await POST(
-      '/api/promo/broadcast_post/generate');
-    if (res.error) {
-      toast(res.error, 'error'); return;
-    }
-    toast('Post generated.', 'success');
-    state.broadcastPostFilter = 'pending';
-    await loadBroadcastPostQueue();
+    const res = await POST('/api/promo/broadcast_post/preview-prompt');
+    if (res.error) { toast(res.error, 'error'); return; }
+    showPromptReviewModal(res);
   } catch(e) {
-    toast('Generate failed: ' + e.message, 'error');
+    toast('Preview failed: ' + e.message, 'error');
   } finally {
     btn.disabled = false;
     btn.textContent = '+ Generate One';
   }
 }
 
-async function approveWaPost(id) {
+function showPromptReviewModal(data) {
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  document.getElementById('modal-content').innerHTML = `
+    <h3 style="margin-top:0;">Review Image Prompt</h3>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">
+      Proverb: <em>"${esc(data.proverb_text)}"</em>
+    </p>
+    <div style="margin-bottom:14px;">
+      <label style="font-size:11px;font-weight:600;color:var(--text-muted);
+                    text-transform:uppercase;letter-spacing:.05em;
+                    display:block;margin-bottom:6px;">Meaning</label>
+      <textarea id="review-meaning" rows="4"
+        style="width:100%;box-sizing:border-box;font-size:13px;
+               padding:10px;border:1px solid var(--border);border-radius:6px;
+               background:var(--surface-2);color:var(--text);resize:vertical;"
+      >${esc(data.meaning)}</textarea>
+    </div>
+    <div style="margin-bottom:20px;">
+      <label style="font-size:11px;font-weight:600;color:var(--text-muted);
+                    text-transform:uppercase;letter-spacing:.05em;
+                    display:block;margin-bottom:6px;">
+        Image Prompt
+        <span style="font-weight:400;text-transform:none;"> — edit before generating</span>
+      </label>
+      <textarea id="review-image-prompt" rows="4"
+        style="width:100%;box-sizing:border-box;font-size:13px;
+               padding:10px;border:1px solid var(--border);border-radius:6px;
+               background:var(--surface-2);color:var(--text);resize:vertical;"
+      >${esc(data.image_prompt)}</textarea>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" id="btn-confirm-generate"
+        onclick="confirmGeneratePost('${esc(data.proverb_id)}')">
+        Generate Image
+      </button>
+    </div>
+  `;
+  showModal();
+}
+
+async function confirmGeneratePost(proverb_id) {
+  const btn          = document.getElementById('btn-confirm-generate');
+  const meaning      = document.getElementById('review-meaning').value.trim();
+  const image_prompt = document.getElementById('review-image-prompt').value.trim();
+  if (!image_prompt) { toast('Image prompt cannot be empty.', 'error'); return; }
+
+  btn.disabled    = true;
+  btn.textContent = 'Generating\u2026 (30\u201360s)';
   try {
-    await POST(`/api/promo/broadcast_post/${id}/status`,
-      { status: 'approved' });
-    toast('Approved.', 'success');
-    // Ensure we keep the pending view if that's where we were, 
-    // but the approved post will naturally move out of 'filtered'.
+    const res = await POST('/api/promo/broadcast_post/generate',
+      { proverb_id, meaning, image_prompt });
+    if (res.error) { toast(res.error, 'error'); return; }
+    closeModal();
+    toast('Post generated.', 'success');
+    state.broadcastPostFilter = 'pending';
     await loadBroadcastPostQueue();
   } catch(e) {
-    toast('Failed: ' + e.message, 'error');
+    toast('Generate failed: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Generate Image'; }
   }
+}
+
+async function approveWaPost(id) {
+  // Redirect to schedule (queue directly to EC2)
+  return queueProverbToOutbox(id);
 }
 
 async function rejectWaPost(id) {
@@ -7185,11 +8878,11 @@ async function bulkApproveAll() {
   try {
     const res = await POST('/api/promo/broadcast_post/bulk_approve');
     if (res.ec2_synced === false) {
-      toast(`${res.approved} posts approved — ${res.ec2_failures} EC2 sync failure(s). Those may not auto-fire.`, 'error');
+      toast(`${res.approved} posts scheduled — ${res.ec2_failures} EC2 sync failure(s). Those may not auto-fire.`, 'error');
     } else {
-      toast(`${res.approved} posts approved and synced to EC2.`, 'success');
+      toast(`${res.approved} posts scheduled on EC2.`, 'success');
     }
-    state.broadcastPostFilter = 'approved';
+    state.broadcastPostFilter = 'pending';
     await loadBroadcastPostQueue();
   } catch(e) {
     toast('Failed: ' + e.message, 'error');
@@ -7223,33 +8916,30 @@ async function regenWaPostImage(id) {
 
 async function queueProverbToOutbox(id, forceText = false, forceRetry = false) {
   try {
-    const res = await POST(`/api/promo/broadcast_post/${id}/queue`, { 
+    const res = await POST(`/api/promo/broadcast_post/${id}/queue`, {
         force_text: forceText,
-        force_retry: forceRetry 
+        force_retry: forceRetry
     });
     if (res.ok) {
       if (res.ec2_synced === false) {
-        const msg = `Added locally, but EC2 sync failed: ${res.error || 'S3 upload error'}.\n\nBroadcast posts require an image to look correct. Do you want to override and send as TEXT ONLY instead?`;
+        const msg = `Scheduled locally, but EC2 sync failed: ${res.error || 'S3 upload error'}.\n\nBroadcast posts require an image to look correct. Do you want to override and send as TEXT ONLY instead?`;
         if (confirm(msg)) {
            return queueProverbToOutbox(id, true);
         }
       } else if (res.already_exists) {
-        const msg = "This proverb is already in your Outbox.\n\nIf it hasn't appeared on your EC2 queue, do you want to remove it and RE-QUEUE it now?";
+        const msg = "This post is already scheduled on EC2.\n\nIf it hasn't appeared on the EC2 queue, do you want to remove it and RE-SCHEDULE it now?";
         if (confirm(msg)) {
            return queueProverbToOutbox(id, false, true);
         }
       } else {
-        toast(forceText ? 'Queued as text (override successful).' : 'Added to Outbox', 'success');
+        toast(forceText ? 'Scheduled as text (override).' : `Scheduled on EC2 — ${res.scheduled_at ? new Date(res.scheduled_at).toLocaleString() : ''}`, 'success');
       }
-      await Promise.all([
-          loadPromoMessages(),
-          loadBroadcastPostQueue()
-      ]);
+      await loadBroadcastPostQueue();
     } else {
-      toast(res.error || 'Failed to queue.', 'error');
+      toast(res.error || 'Failed to schedule.', 'error');
     }
   } catch(e) {
-    toast('Queue failed: ' + e.message, 'error');
+    toast('Schedule failed: ' + e.message, 'error');
   }
 }
 
@@ -7259,13 +8949,24 @@ async function sendThisPost(id) {
       `/api/promo/broadcast_post/${id}/send`);
     if (res.ok) {
       toast('Posted to channel!', 'success');
-      state.broadcastPostFilter = 'approved';
+      state.broadcastPostFilter = 'sent';
       await loadBroadcastPostQueue();
     } else {
       toast(res.error || 'Send failed.', 'error');
     }
   } catch(e) {
     toast('Send failed: ' + e.message, 'error');
+  }
+}
+
+async function deleteWaPost(id) {
+  if (!confirm('Delete this post? This cannot be undone.')) return;
+  try {
+    await fetch(`/api/promo/broadcast_post/${id}`, { method: 'DELETE' });
+    toast('Deleted.', 'success');
+    await loadBroadcastPostQueue();
+  } catch(e) {
+    toast('Delete failed: ' + e.message, 'error');
   }
 }
 
@@ -7535,86 +9236,177 @@ function renderPromoSender() {
   const container = document.getElementById('promo-view-sender');
   if (!container) return;
 
-  const msgs         = state.promoMessages;
-  const active       = msgs.filter(m => m.status === 'queued' || m.status === 'failed');
-  const history      = msgs.filter(m => m.status === 'sent');
-  const selectedCount = (state.selectedOutboxMessages || []).length;
-  const failedCount  = active.filter(m => m.status === 'failed').length;
-
-  const TABLE_HEADER = `
-    <table class="promo-table">
-      <thead>
-        <tr>
-          <th style="width:40px;"></th>
-          <th style="width:160px;">Recipient</th>
-          <th>Content Preview</th>
-          <th style="width:100px;">Status</th>
-          <th style="width:140px;">Delivery</th>
-          <th style="width:120px;">Source</th>
-          <th style="width:200px;">Actions</th>
-        </tr>
-      </thead>`;
-
   container.innerHTML = `
-    <div class="hub-panel" style="max-width:1300px;">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;">
-        <div>
-          <h2>Outbox (The Bucket)</h2>
-          <div style="font-size:12px;color:var(--muted);">
-            ${active.length} pending · ${failedCount > 0 ? `<span style="color:var(--p1)">${failedCount} failed</span> · ` : ''}${history.length} sent
-          </div>
+    <div style="display:flex;flex-direction:column;gap:16px;padding:0;">
+
+      <div class="hub-panel" style="padding:16px 20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h2 style="margin:0;">Scheduler</h2>
         </div>
-        <div style="display:flex;gap:8px;">
-          <button class="btn-secondary" onclick="loadPromoMessages()" style="font-size:12px;">↻ Refresh</button>
-          <button class="btn-primary" onclick="popNextFromBucket()"
-                  style="font-size:12px;background:var(--p3);border-color:var(--p3);"
-                  title="Fires the next due message via EC2, bypassing the schedule.">
-            🚀 Fire Next Due (EC2)
+        <p style="margin:0 0 12px;color:var(--text-secondary);font-size:13px;">
+          14-day rolling schedule — Mon–Sat 07:30 PROVERB · 12:15 NOVEL · 18:30 FLASH &nbsp;|&nbsp; Sun 09:00 PROVERB
+        </p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button class="btn-secondary" onclick="runSchedulerPreview()" style="font-size:13px;">
+            Preview Schedule
+          </button>
+          <button class="btn-primary" onclick="runSchedulerNow()" style="font-size:13px;">
+            Run Scheduler
+          </button>
+          <button class="btn-secondary" onclick="cleanQueuePreview()" style="font-size:13px;">
+            Audit Queue
+          </button>
+          <button class="btn-secondary" onclick="cleanQueueNow()" style="font-size:13px;color:var(--warning,#e67e22);">
+            Clean Queue
           </button>
         </div>
+        <div id="scheduler-result" style="margin-top:14px;"></div>
       </div>
 
-      <div style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:16px;gap:12px;">
-        ${selectedCount > 0 ? `
-          <span style="font-size:12px;font-weight:600;color:var(--p3);">${selectedCount} selected</span>
-          <button class="btn-primary" onclick="sendSelectedOutboxNow()"
-                  style="font-size:11px;padding:6px 16px;background:var(--p3);border-color:var(--p3);">
-            🚀 Send Selected Now
-          </button>
-          <button class="btn-secondary" onclick="state.selectedOutboxMessages=[]; renderPromoSender()"
-                  style="font-size:11px;padding:6px 12px;">Clear Selection</button>
-        ` : `
-          <span style="font-size:12px;color:var(--muted);">Select messages to bulk send</span>
-        `}
+      <div class="hub-panel" style="padding:0;overflow:hidden;">
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    padding:16px 20px;border-bottom:1px solid var(--border);">
+          <h2 style="margin:0;">EC2 Sender Queue</h2>
+          <button class="btn-secondary"
+                  onclick="document.getElementById('ec2-status-iframe').src += ''"
+                  style="font-size:12px;">↻ Refresh</button>
+        </div>
+        <iframe id="ec2-status-iframe"
+                src="http://13.218.60.13:5555/status"
+                style="width:100%;height:70vh;border:none;display:block;"
+                title="EC2 Sender Status">
+        </iframe>
       </div>
 
-      ${TABLE_HEADER}
-        <tbody>
-          ${active.length === 0
-            ? '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:60px;">Queue is empty — nothing pending.</td></tr>'
-            : active.map(m => _renderOutboxRow(m)).join('')}
-        </tbody>
-      </table>
-
-      ${history.length > 0 ? `
-        <details style="margin-top:32px;">
-          <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--muted);
-                          padding:10px 0;border-top:1px solid var(--border);list-style:none;
-                          display:flex;justify-content:space-between;align-items:center;">
-            <span>▶ History (${history.length} sent)</span>
-            <button class="btn-secondary" style="font-size:11px;padding:4px 12px;color:var(--p1);"
-                    onclick="event.stopPropagation();clearOutboxHistory()">Clear History</button>
-          </summary>
-          <div style="margin-top:12px;">
-            ${TABLE_HEADER}
-              <tbody>
-                ${history.map(m => _renderOutboxRow(m)).join('')}
-              </tbody>
-            </table>
-          </div>
-        </details>
-      ` : ''}
     </div>`;
+}
+
+async function runSchedulerPreview() {
+  const el = document.getElementById('scheduler-result');
+  if (el) el.innerHTML = '<span style="color:var(--text-secondary);font-size:13px;">Loading preview…</span>';
+  try {
+    const res = await fetch('/api/scheduler/preview');
+    const data = await res.json();
+    _renderSchedulerResult(data);
+  } catch(e) {
+    if (el) el.innerHTML = `<span style="color:var(--error);">Error: ${e.message}</span>`;
+  }
+}
+
+async function runSchedulerNow() {
+  if (!confirm('Queue all available content for the next 14 days?')) return;
+  const el = document.getElementById('scheduler-result');
+  if (el) el.innerHTML = '<span style="color:var(--text-secondary);font-size:13px;">Running…</span>';
+  try {
+    const res = await fetch('/api/scheduler/run', { method: 'POST',
+      headers: {'Content-Type':'application/json'}, body: '{}' });
+    const data = await res.json();
+    if (data.error) { toast(data.error, 'error'); if(el) el.innerHTML=''; return; }
+    _renderSchedulerResult(data);
+    toast(`Scheduled ${data.scheduled} item(s).`, 'success');
+  } catch(e) {
+    if (el) el.innerHTML = `<span style="color:var(--error);">Error: ${e.message}</span>`;
+    toast('Scheduler error: ' + e.message, 'error');
+  }
+}
+
+function _renderSchedulerResult(data) {
+  const el = document.getElementById('scheduler-result');
+  if (!el) return;
+  if (!data.actions || data.actions.length === 0) {
+    el.innerHTML = '<p style="color:var(--text-secondary);font-size:13px;margin:0;">No slots to fill — schedule is full or no content available.</p>';
+    return;
+  }
+  const typeIcon = { PROVERB: '🌿', NOVEL_SERIAL: '📖', FLASH_FICTION: '⚡' };
+  const rows = data.actions.map(a => {
+    const dt = new Date(a.slot);
+    const label = dt.toLocaleDateString('en-ZA', {weekday:'short',month:'short',day:'numeric'})
+                + ' ' + dt.toLocaleTimeString('en-ZA', {hour:'2-digit',minute:'2-digit',timeZone:'Africa/Johannesburg'});
+    const icon = typeIcon[a.type] || '•';
+    const title = a.text || a.title || '';
+    return `<tr>
+      <td style="padding:4px 10px 4px 0;white-space:nowrap;font-size:12px;color:var(--text-secondary);">${label}</td>
+      <td style="padding:4px 10px 4px 0;font-size:12px;">${icon} ${a.type.replace('_',' ')}</td>
+      <td style="padding:4px 0;font-size:12px;color:var(--text-secondary);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${title}</td>
+    </tr>`;
+  }).join('');
+  const label = data.dry_run ? 'Preview' : 'Queued';
+  el.innerHTML = `
+    <p style="font-size:12px;color:var(--text-secondary);margin:0 0 8px;">
+      ${label}: <strong>${data.scheduled}</strong> item(s) &nbsp;·&nbsp;
+      Proverbs remaining: ${data.proverbs_remaining} &nbsp;·&nbsp;
+      Novel chunks remaining: ${data.novel_chunks_remaining} &nbsp;·&nbsp;
+      Flash remaining: ${data.flash_chunks_remaining}
+    </p>
+    <table style="border-collapse:collapse;width:100%;">${rows}</table>`;
+}
+
+async function cleanQueuePreview() {
+  const el = document.getElementById('scheduler-result');
+  if (el) el.innerHTML = '<span style="color:var(--text-secondary);font-size:13px;">Auditing queue…</span>';
+  try {
+    const res = await fetch('/api/scheduler/clean-queue');
+    const data = await res.json();
+    _renderCleanQueueResult(data);
+  } catch(e) {
+    if (el) el.innerHTML = `<span style="color:var(--error);">Error: ${e.message}</span>`;
+  }
+}
+
+async function cleanQueueNow() {
+  const el = document.getElementById('scheduler-result');
+  // First preview to show what will change
+  const preview = await fetch('/api/scheduler/clean-queue').then(r=>r.json()).catch(()=>null);
+  if (!preview) { toast('Could not load queue audit', 'error'); return; }
+  const msg = preview.fixed === 0 && preview.deleted === 0
+    ? 'Queue looks clean — nothing to fix. Continue anyway?'
+    : `Fix ${preview.fixed} time(s) and remove ${preview.deleted} duplicate(s) from EC2?`;
+  if (!confirm(msg)) return;
+  if (el) el.innerHTML = '<span style="color:var(--text-secondary);font-size:13px;">Cleaning…</span>';
+  try {
+    const res = await fetch('/api/scheduler/clean-queue', { method: 'POST',
+      headers: {'Content-Type':'application/json'}, body: '{}' });
+    const data = await res.json();
+    if (data.error) { toast(data.error, 'error'); if(el) el.innerHTML=''; return; }
+    _renderCleanQueueResult(data);
+    toast(`Done — fixed ${data.fixed}, removed ${data.deleted}.`, 'success');
+  } catch(e) {
+    if (el) el.innerHTML = `<span style="color:var(--error);">Error: ${e.message}</span>`;
+    toast('Clean queue error: ' + e.message, 'error');
+  }
+}
+
+function _renderCleanQueueResult(data) {
+  const el = document.getElementById('scheduler-result');
+  if (!el) return;
+  if (data.fixed === 0 && data.deleted === 0) {
+    el.innerHTML = '<p style="color:var(--text-secondary);font-size:13px;margin:0;">Queue is clean — no issues found.</p>';
+    return;
+  }
+  const fmt = iso => {
+    const dt = new Date(iso);
+    return dt.toLocaleDateString('en-ZA',{weekday:'short',month:'short',day:'numeric'})
+           + ' ' + dt.toLocaleTimeString('en-ZA',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Johannesburg'});
+  };
+  const label = data.dry_run ? 'Would fix' : 'Fixed';
+  let html = `<p style="font-size:12px;color:var(--text-secondary);margin:0 0 8px;">
+    ${label}: <strong>${data.fixed}</strong> time(s) &nbsp;·&nbsp; Removed: <strong>${data.deleted}</strong> duplicate(s)
+  </p><table style="border-collapse:collapse;width:100%;">`;
+  for (const f of (data.fixes || [])) {
+    html += `<tr>
+      <td style="padding:4px 10px 4px 0;font-size:12px;color:var(--warning,#e67e22);white-space:nowrap;">✏️ RETIME</td>
+      <td style="padding:4px 10px 4px 0;font-size:12px;white-space:nowrap;">${fmt(f.old_time)} → ${fmt(f.new_time)}</td>
+      <td style="padding:4px 0;font-size:12px;color:var(--text-secondary);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${f.content}</td>
+    </tr>`;
+  }
+  for (const d of (data.deletions || [])) {
+    html += `<tr>
+      <td style="padding:4px 10px 4px 0;font-size:12px;color:var(--error,#e74c3c);white-space:nowrap;">🗑 DELETE</td>
+      <td style="padding:4px 10px 4px 0;font-size:12px;white-space:nowrap;">${fmt(d.time)}</td>
+      <td style="padding:4px 0;font-size:12px;color:var(--text-secondary);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${d.content}</td>
+    </tr>`;
+  }
+  el.innerHTML = html + '</table>';
 }
 
 function toggleOutboxSelection(id, checked) {
@@ -7966,9 +9758,12 @@ function renderPromoSettings() {
       </div>
 
       <div class="promo-settings-section">
-        <h3>Serializer Defaults</h3>
-        <div class="form-group"><label class="form-label">Target Chunk Word Count</label><input class="form-input" id="set-ser-target" type="number" value="${s.serializer_defaults?.target_chunk_word_count}"/></div>
-        <div class="form-group"><label class="form-label">Max Chunk Word Count (Avoid truncation)</label><input class="form-input" id="set-ser-max" type="number" value="${s.serializer_defaults?.max_chunk_word_count}"/></div>
+        <h3>Serializer Profiles</h3>
+        <p style="font-size:11px;color:var(--muted);margin-bottom:16px;">Profiles control how content is split into WA chunks. Select a profile when serializing a work.</p>
+        <div id="serializer-profiles-list">
+          ${renderSerializerProfilesList(s.serializer_profiles || [])}
+        </div>
+        <button class="btn-secondary" style="font-size:12px;margin-top:8px;" onclick="openAddProfileModal()">+ Add Profile</button>
       </div>
 
       <div class="promo-settings-section">
@@ -8049,6 +9844,105 @@ function renderPromoSettings() {
     </div>`;
 }
 
+// ── Serializer Profile CRUD ───────────────────────────────────────────────────
+
+function renderSerializerProfilesList(profiles) {
+  if (!profiles.length) return '<p style="color:var(--muted);font-size:13px;">No profiles yet.</p>';
+  return profiles.map(p => {
+    const chunks = p.num_chunks ? `${p.num_chunks} chunks` : 'Auto';
+    return `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;margin-bottom:8px;font-size:13px;">
+        <span style="flex:1;font-weight:600;">${esc(p.name)}</span>
+        <span style="color:var(--muted);font-size:11px;">${chunks} · ${p.target_words} words/chunk</span>
+        <button class="btn-secondary" style="font-size:11px;padding:3px 8px;" onclick="openEditProfileModal('${p.id}')">Edit</button>
+        <button class="btn-secondary" style="font-size:11px;padding:3px 8px;color:var(--danger);" onclick="deleteSerializerProfile('${p.id}')">Delete</button>
+      </div>`;
+  }).join('');
+}
+
+function openAddProfileModal() {
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">Add Serializer Profile</div>
+    <div class="form-group"><label class="form-label">Name *</label><input class="form-input" id="prof-name" placeholder="e.g. Flash Fiction"/></div>
+    <div class="form-group">
+      <label class="form-label">Number of Chunks</label>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <input class="form-input" id="prof-chunks" type="number" min="1" placeholder="e.g. 2" style="width:80px;"/>
+        <span style="font-size:12px;color:var(--muted);">Leave blank = Auto (AI decides)</span>
+      </div>
+    </div>
+    <div class="form-group"><label class="form-label">Target Words Per Chunk</label><input class="form-input" id="prof-words" type="number" min="50" value="200" style="width:100px;"/></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="saveNewProfile()">Save Profile</button>
+    </div>`;
+  showModal();
+}
+
+function openEditProfileModal(profileId) {
+  const p = (state.promoSettings?.serializer_profiles || []).find(x => x.id === profileId);
+  if (!p) return;
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">Edit Profile</div>
+    <div class="form-group"><label class="form-label">Name *</label><input class="form-input" id="prof-name" value="${esc(p.name)}"/></div>
+    <div class="form-group">
+      <label class="form-label">Number of Chunks</label>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <input class="form-input" id="prof-chunks" type="number" min="1" value="${p.num_chunks || ''}" placeholder="e.g. 2" style="width:80px;"/>
+        <span style="font-size:12px;color:var(--muted);">Leave blank = Auto</span>
+      </div>
+    </div>
+    <div class="form-group"><label class="form-label">Target Words Per Chunk</label><input class="form-input" id="prof-words" type="number" min="50" value="${p.target_words}" style="width:100px;"/></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="saveEditProfile('${profileId}')">Save</button>
+    </div>`;
+  showModal();
+}
+
+async function saveNewProfile() {
+  const name   = document.getElementById('prof-name').value.trim();
+  const chunks = document.getElementById('prof-chunks').value.trim();
+  const words  = document.getElementById('prof-words').value.trim();
+  if (!name) { toast('Name is required', 'error'); return; }
+  try {
+    await POST('/api/serializer/profiles', {
+      name,
+      num_chunks:   chunks ? parseInt(chunks) : null,
+      target_words: parseInt(words) || 200,
+    });
+    toast('Profile added', 'success');
+    closeModal();
+    await loadPromoSettings();
+  } catch(e) { toast('Failed to save profile', 'error'); }
+}
+
+async function saveEditProfile(profileId) {
+  const name   = document.getElementById('prof-name').value.trim();
+  const chunks = document.getElementById('prof-chunks').value.trim();
+  const words  = document.getElementById('prof-words').value.trim();
+  if (!name) { toast('Name is required', 'error'); return; }
+  try {
+    await PUT(`/api/serializer/profiles/${profileId}`, {
+      name,
+      num_chunks:   chunks ? parseInt(chunks) : null,
+      target_words: parseInt(words) || 200,
+    });
+    toast('Profile updated', 'success');
+    closeModal();
+    await loadPromoSettings();
+  } catch(e) { toast('Failed to update profile', 'error'); }
+}
+
+async function deleteSerializerProfile(profileId) {
+  if (!confirm('Delete this profile?')) return;
+  try {
+    await DEL(`/api/serializer/profiles/${profileId}`);
+    toast('Profile deleted', 'success');
+    await loadPromoSettings();
+  } catch(e) { toast('Failed to delete profile', 'error'); }
+}
+
 function renderAiProviderFields(key, label, data = {}) {
   return `
     <div style="margin-bottom:16px;">
@@ -8121,10 +10015,6 @@ async function savePromoSettings() {
     cta_links: {
       patreon: document.getElementById('set-cta-patreon').value.trim(),
       website: document.getElementById('set-cta-website').value.trim()
-    },
-    serializer_defaults: {
-      target_chunk_word_count: parseInt(document.getElementById('set-ser-target').value) || 400,
-      max_chunk_word_count: parseInt(document.getElementById('set-ser-max').value) || 550
     },
     wa_channel_branding: {
       channel_name: document.getElementById('set-wa-name').value.trim(),
@@ -8356,4 +10246,2006 @@ async function closeDeal(leadId, outcome) {
     toast(`Lead closed: ${outcome}`, outcome === 'won' ? 'success' : 'error');
     await loadPromoLeads();
   } catch(e) { toast('Could not close lead', 'error'); }
+}
+
+// ── Flash Fiction Module ──────────────────────────────────────────────────────
+
+const FF_GENRES = [
+  { value: 'historical',      label: 'Historical',       contract: 'Immerse me in a real time and place; make the past feel urgent' },
+  { value: 'romance',         label: 'Romance',          contract: 'Emotional tension, an obstacle, a satisfying or devastating resolution' },
+  { value: 'fantasy',         label: 'Fantasy',          contract: 'A world with its own rules; magic or myth carries the stakes' },
+  { value: 'science_fiction', label: 'Science Fiction',  contract: 'Extrapolate one idea and make me feel its consequences' },
+  { value: 'thriller',        label: 'Thriller',         contract: 'A character in danger; every second counts' },
+  { value: 'horror',          label: 'Horror',           contract: 'Dread through implication, not explanation' },
+];
+
+const FF_TROPES = {
+  historical: [
+    { value: 'witness',            label: 'The witness to a great event',   desc: 'ordinary person at the hinge of history' },
+    { value: 'alternate_decision', label: 'The alternate decision',         desc: 'what if the famous figure chose differently?' },
+    { value: 'lost_voice',         label: 'The lost voice',                 desc: 'a person history did not record' },
+    { value: 'time_traveller',     label: "The time traveller's dilemma",   desc: 'intervention that becomes causation' },
+    { value: 'relic',              label: 'The relic and its secret',       desc: 'an object that carries a suppressed truth' },
+  ],
+  romance: [
+    { value: 'opposites_attract',  label: 'Opposites attract',              desc: '' },
+    { value: 'second_chance',      label: 'Second chance at love',          desc: '' },
+    { value: 'friends_to_lovers',  label: 'Friends to lovers',              desc: '' },
+    { value: 'fake_relationship',  label: 'Fake relationship',              desc: 'pretence becomes real' },
+    { value: 'love_triangle',      label: 'Love triangle',                  desc: '' },
+    { value: 'forbidden_love',     label: 'Forbidden love',                 desc: '' },
+  ],
+  fantasy: [
+    { value: 'chosen_one',         label: 'The chosen one',                 desc: 'destiny and its cost' },
+    { value: 'quest',              label: 'The quest',                      desc: '' },
+    { value: 'dark_bargain',       label: 'The dark bargain',               desc: 'power at a terrible price' },
+    { value: 'false_ally',         label: 'The false ally / hidden traitor',desc: '' },
+    { value: 'magical_object',     label: 'The magical object',             desc: 'and its true nature' },
+    { value: 'dying_world',        label: 'The dying world',                desc: 'and the last hope' },
+  ],
+  science_fiction: [
+    { value: 'butterfly_effect',   label: 'The butterfly effect',           desc: 'small change, catastrophic consequence' },
+    { value: 'time_loop',          label: 'The time loop',                  desc: '' },
+    { value: 'first_contact',      label: 'First contact',                  desc: '' },
+    { value: 'ai_threshold',       label: 'The AI and its threshold',       desc: '' },
+    { value: 'future_shock',       label: 'Future shock',                   desc: 'character displaced in time' },
+    { value: 'grandfather_paradox',label: 'The grandfather paradox',        desc: '' },
+  ],
+  thriller: [
+    { value: 'race_against_clock', label: 'Race against the clock',         desc: '' },
+    { value: 'wrongfully_accused', label: 'The wrongfully accused',         desc: '' },
+    { value: 'unreliable_narrator',label: 'The unreliable narrator',        desc: '' },
+    { value: 'hidden_identity',    label: 'Hidden identity',                desc: '' },
+    { value: 'cat_and_mouse',      label: 'Cat and mouse',                  desc: '' },
+    { value: 'hidden_threat',      label: 'The hidden threat',              desc: '' },
+  ],
+  horror: [
+    { value: 'unseen_terror',      label: 'The unseen terror',              desc: '' },
+    { value: 'creepy_child',       label: 'The creepy child',               desc: "a figure who knows things they shouldn't" },
+    { value: 'isolation_horror',   label: 'Isolation horror',               desc: '' },
+    { value: 'cursed_object',      label: 'The cursed object',              desc: '' },
+    { value: 'twist_ending',       label: 'The twist ending',               desc: '' },
+    { value: 'unreliable_narrator',label: 'The unreliable narrator',        desc: '' },
+  ],
+};
+
+const FF_TWISTS = [
+  { value: 'invert_outcome',     label: 'Invert the outcome',     desc: 'The expected resolution is replaced by its opposite' },
+  { value: 'shift_victim',       label: 'Shift the victim',       desc: 'Who we think is in danger turns out to be the threat' },
+  { value: 'reveal_cause',       label: 'Reveal the cause',       desc: "The protagonist's action is the source of the horror or obstacle" },
+  { value: 'reframe_genre',      label: 'Reframe the genre',      desc: 'The story we thought was one thing turns out to be another' },
+  { value: 'compress_timeline',  label: 'Compress the timeline',  desc: 'The story has already ended; the reader is in the aftermath' },
+  { value: 'relocate_monster',   label: 'Relocate the monster',   desc: 'The external threat is revealed as internal, or vice versa' },
+  { value: 'collapse_archetype', label: 'Collapse the archetype', desc: 'The character who seemed to fulfil a role turns out to be its opposite' },
+];
+
+const FF_WORD_COUNTS = [
+  { value: '100_300',  label: '100–300 words',    sub: 'A single moment. One beat. Twist in the final line.' },
+  { value: '300_500',  label: '300–500 words',    sub: 'Compressed arc: inciting event, escalation, twist.' },
+  { value: '500_750',  label: '500–750 words',    sub: 'Full arc with room for character interiority or dialogue.' },
+  { value: '750_1000', label: '750–1,000 words',  sub: 'Room for a secondary character, fuller confrontation, layered twist.' },
+];
+
+const FF_EMOTIONS = [
+  { value: 'dread',        label: 'Dread' },
+  { value: 'ache',         label: 'Ache' },
+  { value: 'exhilaration', label: 'Exhilaration' },
+  { value: 'unease',       label: 'Unease' },
+  { value: 'tenderness',   label: 'Tenderness' },
+  { value: 'shock',        label: 'Shock' },
+];
+
+// Module-level form + output state
+const ffState = {
+  genre:       '',
+  trope:       '',
+  twist:       '',
+  settingPlace:'',
+  settingEra:  '',
+  settingAtm:  '',
+  wordCount:   '300_500',
+  pov:         '',
+  character:   '',
+  emotion:     '',
+  constraint:  '',
+  optionalOpen: false,
+  story:       null,
+  loading:     false,
+  error:       null,
+};
+
+function renderFlashFiction() {
+  const el = document.getElementById('producing-tab-flash-fiction');
+  if (!el) return;
+
+  const genreOptions = FF_GENRES.map(g =>
+    `<option value="${g.value}"${ffState.genre === g.value ? ' selected' : ''}>${g.label}</option>`
+  ).join('');
+
+  const tropeOptions = ffState.genre
+    ? (FF_TROPES[ffState.genre] || []).map(t => {
+        const descHtml = t.desc ? ` <span class="ff-option-desc">(${t.desc})</span>` : '';
+        return `<option value="${t.value}"${ffState.trope === t.value ? ' selected' : ''}>${t.label}${t.desc ? ' — ' + t.desc : ''}</option>`;
+      }).join('')
+    : `<option value="" disabled selected>Select a genre first</option>`;
+
+  const twistOptions = FF_TWISTS.map(t =>
+    `<option value="${t.value}"${ffState.twist === t.value ? ' selected' : ''}>${t.label} — ${t.desc}</option>`
+  ).join('');
+
+  const wordCountRadios = FF_WORD_COUNTS.map(w => `
+    <label class="ff-radio-item${ffState.wordCount === w.value ? ' active' : ''}">
+      <input type="radio" name="ff-word-count" value="${w.value}"
+             ${ffState.wordCount === w.value ? 'checked' : ''}
+             onchange="ffSetWordCount('${w.value}')">
+      <div class="ff-radio-body">
+        <span class="ff-radio-label">${w.label}</span>
+        <span class="ff-radio-sub">${w.sub}</span>
+      </div>
+    </label>`).join('');
+
+  const selectedGenre = FF_GENRES.find(g => g.value === ffState.genre);
+  const contractHtml  = selectedGenre
+    ? `<div class="ff-contract">${selectedGenre.contract}</div>`
+    : '';
+
+  const canSubmit = ffState.genre && ffState.trope && ffState.twist &&
+                    ffState.settingPlace && ffState.settingEra && ffState.settingAtm;
+
+  // Story output area
+  let outputHtml = '';
+  if (ffState.loading) {
+    outputHtml = `
+      <div class="ff-loading">
+        <div class="ff-loading-spinner"></div>
+        <div class="ff-loading-text">Drafting your story<span class="ff-loading-dots"></span></div>
+        <div class="ff-loading-sub">Running internal revision pass — this may take 20–30 seconds.</div>
+      </div>`;
+  } else if (ffState.error) {
+    outputHtml = `
+      <div class="ff-error">
+        <div class="ff-error-msg">${ffState.error}</div>
+        <button class="ff-btn-secondary" onclick="generateFlashFiction()">Try again</button>
+      </div>`;
+  } else if (ffState.story) {
+    // Render story: convert *word count* italics, preserve line breaks
+    const storyHtml = ffState.story
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+      .replace(/\n/g, '<br>');
+    outputHtml = `
+      <div class="ff-story-output">
+        <div class="ff-story-text">${storyHtml}</div>
+        <div class="ff-story-actions">
+          <button class="ff-btn-secondary" onclick="ffClearStory()">Generate another</button>
+          <button class="ff-btn-secondary" onclick="ffShowSaveToWorkModal()"
+                  style="border-color:var(--accent);color:var(--accent);">Save to Work →</button>
+        </div>
+      </div>`;
+  } else {
+    outputHtml = `
+      <div class="ff-output-placeholder">
+        <div class="ff-output-placeholder-icon">✦</div>
+        <div class="ff-output-placeholder-text">Your story will appear here.</div>
+      </div>`;
+  }
+
+  el.innerHTML = `
+    <div class="ff-panel">
+      <div class="ff-layout">
+
+        <!-- ── Form column ── -->
+        <div class="ff-form-col">
+
+          <div class="ff-form-section">
+            <label class="ff-label">Genre</label>
+            <select class="ff-select" id="ff-genre" onchange="ffSetGenre(this.value)">
+              <option value="" disabled${!ffState.genre ? ' selected' : ''}>Select genre…</option>
+              ${genreOptions}
+            </select>
+            ${contractHtml}
+          </div>
+
+          <div class="ff-form-section">
+            <label class="ff-label">Trope</label>
+            <select class="ff-select" id="ff-trope" onchange="ffSetTrope(this.value)"
+                    ${!ffState.genre ? 'disabled' : ''}>
+              <option value="" disabled${!ffState.trope ? ' selected' : ''}>Select trope…</option>
+              ${tropeOptions}
+            </select>
+          </div>
+
+          <div class="ff-form-section">
+            <label class="ff-label">Twist</label>
+            <select class="ff-select" id="ff-twist" onchange="ffState.twist = this.value">
+              <option value="" disabled${!ffState.twist ? ' selected' : ''}>Select twist…</option>
+              ${twistOptions}
+            </select>
+          </div>
+
+          <div class="ff-form-section">
+            <label class="ff-label">Setting</label>
+            <div class="ff-hint">Vague settings produce vague stories. Be specific.</div>
+            <input class="ff-input" type="text" placeholder="Place — e.g. a decommissioned subway station under Chicago"
+                   value="${ffState.settingPlace.replace(/"/g, '&quot;')}"
+                   oninput="ffState.settingPlace = this.value">
+            <input class="ff-input" type="text" placeholder="Time or era — e.g. 1943 / present day / near future"
+                   value="${ffState.settingEra.replace(/"/g, '&quot;')}"
+                   oninput="ffState.settingEra = this.value">
+            <input class="ff-input" type="text" placeholder="Atmosphere (one word) — e.g. Suffocating / Elegiac / Weird"
+                   value="${ffState.settingAtm.replace(/"/g, '&quot;')}"
+                   oninput="ffState.settingAtm = this.value">
+          </div>
+
+          <div class="ff-form-section">
+            <label class="ff-label">Word Count</label>
+            <div class="ff-radio-group">${wordCountRadios}</div>
+          </div>
+
+          <div class="ff-optional-section">
+            <button class="ff-optional-toggle" onclick="ffToggleOptional()">
+              <span>${ffState.optionalOpen ? '▾' : '▸'}</span> Optional inputs
+            </button>
+            <div class="ff-optional-body" style="${ffState.optionalOpen ? '' : 'display:none;'}">
+
+              <div class="ff-form-section">
+                <label class="ff-label">Point of view</label>
+                <div class="ff-pov-group">
+                  ${[
+                    { value: 'first_person',         label: 'First person' },
+                    { value: 'third_person_limited', label: 'Third person limited' },
+                    { value: 'unreliable_narrator',  label: 'Unreliable narrator' },
+                  ].map(p => `
+                    <label class="ff-pov-item${ffState.pov === p.value ? ' active' : ''}">
+                      <input type="radio" name="ff-pov" value="${p.value}"
+                             ${ffState.pov === p.value ? 'checked' : ''}
+                             onchange="ffState.pov = this.value; document.querySelectorAll('.ff-pov-item').forEach(el => el.classList.toggle('active', el.querySelector('input').value === '${p.value}'))">
+                      ${p.label}
+                    </label>`).join('')}
+                </div>
+              </div>
+
+              <div class="ff-form-section">
+                <label class="ff-label">Central character</label>
+                <input class="ff-input" type="text"
+                       placeholder="An archetype and one detail that complicates it"
+                       value="${ffState.character.replace(/"/g, '&quot;')}"
+                       oninput="ffState.character = this.value">
+              </div>
+
+              <div class="ff-form-section">
+                <label class="ff-label">Dominant emotion</label>
+                <select class="ff-select" onchange="ffState.emotion = this.value">
+                  <option value=""${!ffState.emotion ? ' selected' : ''}>None</option>
+                  ${FF_EMOTIONS.map(e =>
+                    `<option value="${e.value}"${ffState.emotion === e.value ? ' selected' : ''}>${e.label}</option>`
+                  ).join('')}
+                </select>
+              </div>
+
+              <div class="ff-form-section">
+                <label class="ff-label">Specific constraint</label>
+                <input class="ff-input" type="text"
+                       placeholder="A required opening line, a banned word, a competition theme"
+                       value="${ffState.constraint.replace(/"/g, '&quot;')}"
+                       oninput="ffState.constraint = this.value">
+              </div>
+
+            </div>
+          </div>
+
+          <button class="ff-btn-generate" onclick="generateFlashFiction()"
+                  ${!canSubmit || ffState.loading ? 'disabled' : ''}>
+            ${ffState.loading ? 'Drafting…' : 'Generate Story'}
+          </button>
+
+        </div>
+
+        <!-- ── Output column ── -->
+        <div class="ff-output-col">
+          ${outputHtml}
+        </div>
+
+      </div>
+    </div>`;
+}
+
+function ffSetGenre(value) {
+  ffState.genre = value;
+  ffState.trope = ''; // clear trope when genre changes
+  renderFlashFiction();
+}
+
+function ffSetTrope(value) {
+  ffState.trope = value;
+}
+
+function ffSetWordCount(value) {
+  ffState.wordCount = value;
+  // Update radio item active states without full re-render
+  document.querySelectorAll('.ff-radio-item').forEach(el => {
+    el.classList.toggle('active', el.querySelector('input').value === value);
+  });
+}
+
+function ffToggleOptional() {
+  ffState.optionalOpen = !ffState.optionalOpen;
+  renderFlashFiction();
+}
+
+function ffClearStory() {
+  ffState.story = null;
+  ffState.error = null;
+  renderFlashFiction();
+}
+
+// ── Flash Fiction: Save to Work ───────────────────────────────────────────────
+
+async function ffShowSaveToWorkModal() {
+  // Ensure works are loaded
+  let works = pipelineState.catalogWorks || [];
+  if (!works.length) {
+    try {
+      const data = await GET('/api/catalog-works');
+      works = data.works || [];
+      pipelineState.catalogWorks = works;
+    } catch (_) {}
+  }
+
+  // Extract title: first non-empty line of the story, stripped of markdown
+  const lines     = (ffState.story || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const rawTitle  = lines[0] || 'Untitled Flash Fiction';
+  const cleanTitle = rawTitle.replace(/\*\*/g, '').replace(/\*/g, '').replace(/^#+\s*/, '').trim();
+
+  const workOptions = works.map(w =>
+    `<option value="${w.id}" data-type="${escHtml(w.work_type || 'Book')}">${escHtml(w.title)}</option>`
+  ).join('');
+
+  const mc = document.getElementById('modal-content');
+  if (!mc) return;
+
+  mc.innerHTML = `
+    <div class="modal-title">Save Story to Work</div>
+    <div style="font-size:13px;color:var(--muted);margin-bottom:20px;">
+      Creates a new module under the selected Work with the story as its prose.
+    </div>
+    <div class="form-group">
+      <label class="form-label">Work</label>
+      <select class="form-input" id="ff-save-work-select">
+        <option value="" disabled selected>Select a work…</option>
+        ${workOptions}
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Module Title</label>
+      <input class="form-input" type="text" id="ff-save-title"
+             value="${escHtml(cleanTitle)}" placeholder="Module title…">
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:20px;gap:10px;">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="ffConfirmSaveToWork()">Save to Work</button>
+    </div>`;
+  showModal();
+}
+
+async function ffConfirmSaveToWork() {
+  const workEl  = document.getElementById('ff-save-work-select');
+  const titleEl = document.getElementById('ff-save-title');
+  const workId  = workEl?.value;
+  const title   = titleEl?.value?.trim();
+
+  if (!workId) { toast('Select a work first', 'error'); return; }
+  if (!title)  { toast('Enter a module title', 'error'); return; }
+
+  const work     = (pipelineState.catalogWorks || []).find(w => w.id === workId);
+  const workType = work?.work_type || 'Book';
+
+  // Strip the trailing *N words* line from the prose
+  const storyLines = (ffState.story || '').split('\n');
+  let endIdx = storyLines.length;
+  for (let i = storyLines.length - 1; i >= 0; i--) {
+    const line = storyLines[i].trim();
+    if (line === '') { endIdx = i; continue; }
+    if (/^\*\d+\s+words?\*$/i.test(line)) endIdx = i;
+    break;
+  }
+  const prose = storyLines.slice(0, endIdx).join('\n').trim();
+
+  const btn = document.querySelector('#modal-content .btn-primary');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+
+  try {
+    await POST('/api/content-pipeline', {
+      chapter:        title,
+      book:           workId,
+      work_type:      workType,
+      workflow_stage: 'producing',
+      assets:         { prose },
+      producing_status: { essential_asset: 'done' },
+    });
+    toast(`"${title}" added to ${work?.title || workId} ✓`, 'success');
+    closeModal();
+    pipelineState.overviewData = null;
+    pipelineState.catalogWorks = null;
+  } catch (e) {
+    toast('Save failed: ' + e.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Save to Work'; }
+  }
+}
+
+// ── Bulk Generate Supporting Assets ──────────────────────────────────────────
+
+const BULK_GENERATE_ASSETS = [
+  { assetType: 'synopsis',            fieldKey: 'synopsis',     statusKey: 'synopsis',     label: 'Synopsis' },
+  { assetType: 'blurb',               fieldKey: 'blurb',        statusKey: 'blurb',        label: 'Blurb' },
+  { assetType: 'tagline',             fieldKey: 'tagline',      statusKey: 'tagline',      label: 'Tagline' },
+  { assetType: 'header_image_prompt', fieldKey: 'image_prompt', statusKey: 'image_prompt', label: 'Image Prompt' },
+];
+
+let _bulkGenModuleId = null;
+
+async function showBulkGenerateModal(moduleId) {
+  _bulkGenModuleId = moduleId;
+
+  if (!state.promoSettings?.asset_prompts?.length) {
+    try { state.promoSettings = await GET('/api/promo/settings'); } catch (_) {}
+  }
+  const prompts = state.promoSettings?.asset_prompts || [];
+  const assets  = moduleDetailState.module?.assets || {};
+
+  const assetRows = BULK_GENERATE_ASSETS.map(a => {
+    const cfg        = prompts.find(p => p.asset_type === a.assetType);
+    const activeVer  = cfg?.active_version || 'A';
+    const promptText = cfg?.versions?.[activeVer]?.prompt || '';
+    const hasValue   = !!(assets[a.fieldKey]);
+    const noPrompt   = !promptText;
+
+    return `
+      <div class="bulk-gen-row" id="bulk-row-${a.assetType}">
+        <div class="bulk-gen-row-header">
+          <div class="bulk-gen-row-label">
+            <span class="bulk-gen-icon" id="bulk-icon-${a.assetType}">◯</span>
+            <span>${a.label}</span>
+            ${hasValue ? '<span class="bulk-gen-overwrite">will overwrite</span>' : ''}
+            ${noPrompt  ? '<span class="bulk-gen-warn">no prompt configured</span>' : ''}
+          </div>
+          ${!noPrompt ? `<button class="ff-btn-secondary" style="font-size:11px;padding:4px 10px;"
+                  onclick="toggleBulkPrompt('${a.assetType}')">Edit Prompt</button>` : ''}
+        </div>
+        ${!noPrompt ? `
+        <div id="bulk-prompt-${a.assetType}" style="display:none;margin-top:8px;">
+          <textarea class="form-textarea" id="bulk-prompt-text-${a.assetType}"
+                    style="min-height:80px;font-size:11px;font-family:var(--font-mono);line-height:1.5;"
+                    >${escHtml(promptText)}</textarea>
+          <div style="font-size:10px;color:var(--muted);margin-top:3px;">
+            Changes apply to this run only. Use <code>{{prose}}</code> for chapter text.
+          </div>
+        </div>` : ''}
+      </div>`;
+  }).join('');
+
+  const mc = document.getElementById('modal-content');
+  if (!mc) return;
+
+  mc.innerHTML = `
+    <div class="modal-title">Generate All Supporting Assets</div>
+    <div style="font-size:13px;color:var(--muted);margin-bottom:16px;">
+      Assets are generated in sequence — Synopsis first, since Blurb, Tagline,
+      and Image Prompt are all derived from it.
+    </div>
+    <div class="bulk-gen-list">${assetRows}</div>
+    <div style="font-size:11px;color:var(--muted2);margin-top:12px;padding:10px 12px;
+                background:var(--surface);border-radius:6px;border:1px solid var(--border);">
+      Audio and Header Image are excluded — generate those individually.
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:20px;gap:10px;">
+      <button class="btn-secondary" id="bulk-cancel-btn" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary"   id="bulk-start-btn"  onclick="runBulkGenerate()">Generate All →</button>
+    </div>`;
+  showModal();
+}
+
+function toggleBulkPrompt(assetType) {
+  const el = document.getElementById(`bulk-prompt-${assetType}`);
+  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+
+async function runBulkGenerate() {
+  const moduleId = _bulkGenModuleId;
+  if (!moduleId) return;
+
+  document.getElementById('bulk-start-btn')?.remove();
+  const cancelBtn = document.getElementById('bulk-cancel-btn');
+  if (cancelBtn) cancelBtn.disabled = true;
+
+  // Work from the live module state; update it in-place so each asset
+  // (blurb, tagline, image prompt) sees the just-generated synopsis.
+  let currentAssets = { ...(moduleDetailState.module?.assets || {}) };
+  let anyFailed = false;
+
+  for (const asset of BULK_GENERATE_ASSETS) {
+    const iconEl = document.getElementById(`bulk-icon-${asset.assetType}`);
+    if (iconEl) { iconEl.textContent = '⟳'; iconEl.style.color = 'var(--accent)'; }
+
+    const customPrompt = document.getElementById(`bulk-prompt-text-${asset.assetType}`)?.value?.trim() || '';
+
+    try {
+      const res  = await fetch(`/api/modules/${moduleId}/generate-asset`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ asset_type: asset.assetType, prompt_version: 'A', custom_prompt: customPrompt }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Generation failed');
+
+      // Auto-save
+      currentAssets = { ...currentAssets, [asset.fieldKey]: data.content };
+      await PUT(`/api/content-pipeline/${moduleId}`, { assets: currentAssets });
+      await PUT(`/api/content-pipeline/${moduleId}/producing-status`, {
+        supporting_assets: { [asset.statusKey]: 'done' },
+      });
+
+      // Keep in-memory module up to date (synopsis feeds subsequent assets)
+      if (moduleDetailState.module) {
+        moduleDetailState.module.assets = { ...moduleDetailState.module.assets, [asset.fieldKey]: data.content };
+      }
+
+      if (iconEl) { iconEl.textContent = '✓'; iconEl.style.color = 'var(--p3)'; }
+    } catch (e) {
+      anyFailed = true;
+      if (iconEl) { iconEl.textContent = '✗'; iconEl.style.color = 'var(--p1)'; }
+      toast(`${asset.label} failed: ${e.message}`, 'error');
+    }
+  }
+
+  if (cancelBtn) {
+    cancelBtn.disabled  = false;
+    cancelBtn.textContent = 'Close';
+    cancelBtn.onclick   = async () => { closeModal(); await openModuleDetail(moduleId); };
+  }
+
+  if (!anyFailed) toast('All assets generated and saved ✓', 'success');
+}
+
+// ── Flash Fiction: Generate Story ─────────────────────────────────────────────
+
+async function generateFlashFiction() {
+  // Read current select values in case user hasn't triggered oninput
+  const genreEl = document.getElementById('ff-genre');
+  const tropeEl = document.getElementById('ff-trope');
+  const twistEl = document.getElementById('ff-twist');
+  if (genreEl) ffState.genre = genreEl.value;
+  if (tropeEl) ffState.trope = tropeEl.value;
+  if (twistEl) ffState.twist = twistEl.value;
+
+  const payload = {
+    genre:              ffState.genre,
+    trope:              ffState.trope,
+    twist:              ffState.twist,
+    setting_place:      ffState.settingPlace,
+    setting_era:        ffState.settingEra,
+    setting_atmosphere: ffState.settingAtm,
+    word_count:         ffState.wordCount,
+    pov:                ffState.pov,
+    character:          ffState.character,
+    emotion:            ffState.emotion,
+    constraint:         ffState.constraint,
+  };
+
+  ffState.loading = true;
+  ffState.error   = null;
+  ffState.story   = null;
+  renderFlashFiction();
+
+  try {
+    const result = await POST('/api/flash-fiction/generate', payload);
+    ffState.story = result.story;
+  } catch (e) {
+    ffState.error = e.message || 'The story could not be generated. Please try again.';
+  } finally {
+    ffState.loading = false;
+    renderFlashFiction();
+  }
+}
+
+// ── PANORAMA ─────────────────────────────────────────────────────────────────
+
+async function loadPanorama() {
+  const container = document.getElementById('panorama-container');
+  if (!container) return;
+  container.innerHTML = `<div class="loading-pulse" style="padding:40px;text-align:center;">Loading modules…</div>`;
+  try {
+    const data = await GET('/api/content-pipeline');
+    state.panoramaEntries = data || [];
+    renderPanorama();
+  } catch (e) {
+    container.innerHTML = `<div style="padding:40px;color:var(--p1);">Could not load modules: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderPanorama() {
+  const container = document.getElementById('panorama-container');
+  if (!container) return;
+
+  const entries = state.panoramaEntries;
+  const filter  = state.panoramaFilter || 'all';
+
+  const filtered = filter === 'all'
+    ? entries
+    : entries.filter(e => (e.workflow_stage || 'producing') === filter);
+
+  const stageLabel = { producing: 'Producing', publishing: 'Publishing', promoting: 'Promoting' };
+  const stageClass = { producing: 'stage-producing', publishing: 'stage-publishing', promoting: 'stage-promoting' };
+
+  const filterBtns = ['all', 'producing', 'publishing', 'promoting'].map(f => `
+    <button class="panorama-filter-btn${filter === f ? ' active' : ''}"
+            onclick="state.panoramaFilter='${f}';renderPanorama();">
+      ${f === 'all' ? `All (${entries.length})` : `${stageLabel[f] || f} (${entries.filter(e=>(e.workflow_stage||'producing')===f).length})`}
+    </button>`).join('');
+
+  const cards = filtered.map(e => {
+    const stage   = e.workflow_stage || 'producing';
+    const ea      = e.producing_status?.essential_asset || 'missing';
+    const eaDone  = ea === 'done';
+    const saKeys  = Object.values(e.producing_status?.supporting_assets || {});
+    const saDone  = saKeys.length ? saKeys.filter(v => v === 'done').length : 0;
+    const saTotal = saKeys.length;
+    const hasAssets = eaDone;
+
+    return `
+      <div class="panorama-card" onclick="openPanoramaOverlay('${e.id}')">
+        <div class="panorama-card-book">${esc(e.book || '—')}</div>
+        <div class="panorama-card-title">${esc(e.chapter || 'Untitled')}</div>
+        <div class="panorama-card-meta">
+          <span class="panorama-stage-pill ${stageClass[stage] || ''}">${stageLabel[stage] || stage}</span>
+          ${hasAssets
+            ? `<span class="panorama-asset-dot done" title="Essential asset ready">●</span>`
+            : `<span class="panorama-asset-dot missing" title="No essential asset">○</span>`}
+          ${saTotal > 0 ? `<span class="panorama-sa-count">${saDone}/${saTotal}</span>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  const emptyMsg = filtered.length === 0
+    ? `<div style="padding:60px;text-align:center;color:var(--muted);">No modules match this filter.</div>`
+    : '';
+
+  container.innerHTML = `
+    <div class="hub-panel">
+      <div class="panorama-header">
+        <div>
+          <h2 style="margin-bottom:4px;">Panorama</h2>
+          <div style="font-size:12px;color:var(--muted);">${entries.length} modules across all stages</div>
+        </div>
+        <div class="panorama-filter-bar">${filterBtns}</div>
+      </div>
+      ${emptyMsg}
+      <div class="panorama-grid">${cards}</div>
+    </div>`;
+}
+
+async function openPanoramaOverlay(moduleId) {
+  // Reuse the existing module detail overlay from Producing
+  await openModuleDetail(moduleId);
+}
+
+// ── PEOPLE ───────────────────────────────────────────────────────────────────
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PEOPLE MODE — CRM
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── State ──────────────────────────────────────────────────────────────────
+state.crm = state.crm || {
+  contacts:   [],
+  leads:      [],
+  pipelines:  [],
+  settings:   { weekly_outreach_target: 20 },
+  activePeopleTab: 'contacts',
+  activePipeline:  null,
+  weekStart:       null,   // ISO date string for outreach week
+  selectedLead:    null,
+  contactSearch:   '',
+};
+
+// ── Tab switching ──────────────────────────────────────────────────────────
+function switchPeopleTab(tab) {
+  state.crm.activePeopleTab = tab;
+  document.querySelectorAll('#view-people .sub-tab-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+  document.querySelectorAll('.people-tab-pane').forEach(p => {
+    p.style.display = p.id === `people-tab-${tab}` ? '' : 'none';
+  });
+  switch (tab) {
+    case 'contacts':  renderCRMContacts();  break;
+    case 'pipeline':  renderCRMPipeline();  break;
+    case 'outreach':  renderCRMOutreach();  break;
+    case 'dashboard': renderCRMDashboard(); break;
+  }
+}
+
+// ── Load (called on mode switch) ───────────────────────────────────────────
+async function loadPeople() {
+  try {
+    const [cRes, lRes, pRes, sRes] = await Promise.all([
+      GET('/api/crm/contacts'),
+      GET('/api/crm/leads'),
+      GET('/api/crm/pipelines'),
+      GET('/api/crm/settings'),
+    ]);
+    state.crm.contacts  = cRes.contacts  || [];
+    state.crm.leads     = lRes.leads     || [];
+    state.crm.pipelines = Array.isArray(pRes) ? pRes : [];
+    state.crm.settings  = sRes || { weekly_outreach_target: 20 };
+    if (!state.crm.activePipeline && state.crm.pipelines.length)
+      state.crm.activePipeline = state.crm.pipelines[0].id;
+  } catch(e) {
+    console.error('CRM load error', e);
+  }
+  switchPeopleTab(state.crm.activePeopleTab || 'contacts');
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function _crmPipeline(pid) {
+  return state.crm.pipelines.find(p => p.id === pid);
+}
+function _crmStageName(pipeline, code) {
+  if (!pipeline) return code;
+  const s = pipeline.stages.find(s => s.code === code);
+  return s ? s.name : code;
+}
+function _statusBadge(status, pipeline) {
+  const colors = { open:'var(--text-secondary)', won:'#27ae60', lost:'#e74c3c', cancelled:'#e67e22' };
+  let label = status;
+  if (status === 'won' && pipeline)      label = pipeline.won_label   || 'Won';
+  if (status === 'lost' && pipeline)     label = pipeline.lost_label  || 'Lost';
+  if (status === 'cancelled' && pipeline) label = pipeline.cancelled_label || 'Cancelled';
+  return `<span style="font-size:11px;font-weight:600;color:${colors[status]||'var(--text-secondary)'};">${esc(label)}</span>`;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// TAB 1 — CONTACTS
+// ───────────────────────────────────────────────────────────────────────────
+
+// Track which contact is selected in the detail pane
+state.crm.selectedContactId = state.crm.selectedContactId || null;
+
+function _crmInitials(name) {
+  const parts = (name || '?').trim().split(/\s+/);
+  return parts.length >= 2
+    ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+    : (parts[0][0] || '?').toUpperCase();
+}
+
+function renderCRMContacts() {
+  const el = document.getElementById('people-tab-contacts');
+  if (!el) return;
+
+  // Scaffold the split layout once, then update each pane
+  if (!el.querySelector('.crm-contacts-layout')) {
+    el.innerHTML = `
+      <div class="crm-contacts-layout">
+        <div class="crm-table-pane">
+          <div class="crm-table-toolbar">
+            <h2 style="margin:0;font-size:16px;font-weight:700;">
+              Contacts <span id="crm-count" style="font-size:13px;color:var(--muted);font-weight:400;"></span>
+            </h2>
+            <div style="display:flex;gap:8px;">
+              <label class="btn-secondary" style="font-size:12px;cursor:pointer;">
+                Import CSV
+                <input type="file" accept=".csv" style="display:none;" onchange="importContactsCSV(this)">
+              </label>
+              <button class="btn-primary" style="font-size:12px;" onclick="openAddContactModal()">+ Add Contact</button>
+            </div>
+          </div>
+          <input class="crm-table-search" type="search" placeholder="Search name, phone, email…"
+            oninput="state.crm.contactSearch=this.value;_refreshCRMTable()">
+          <div class="crm-col-header">
+            <span>Name</span><span>Phone</span><span>Email</span><span>Leads</span><span></span>
+          </div>
+          <div id="crm-table-body" class="crm-table-pane-inner"></div>
+        </div>
+        <div id="crm-detail-pane" class="crm-detail-pane"></div>
+      </div>`;
+    // Restore search value
+    const searchEl = el.querySelector('.crm-table-search');
+    if (searchEl) searchEl.value = state.crm.contactSearch || '';
+  }
+
+  _refreshCRMTable();
+  if (state.crm.selectedContactId) _renderContactDetail(state.crm.selectedContactId);
+}
+
+function _refreshCRMTable() {
+  const body = document.getElementById('crm-table-body');
+  const countEl = document.getElementById('crm-count');
+  if (!body) return;
+
+  const q = (state.crm.contactSearch || '').toLowerCase();
+  const contacts = state.crm.contacts.filter(c =>
+    !q || c.name.toLowerCase().includes(q) ||
+    (c.phone||'').includes(q) || (c.email||'').toLowerCase().includes(q)
+  );
+
+  if (countEl) countEl.textContent = state.crm.contacts.length;
+
+  if (contacts.length === 0) {
+    body.innerHTML = `<div style="padding:40px;text-align:center;color:var(--muted);font-size:13px;">
+      ${q ? 'No contacts match your search.' : 'No contacts yet. Add one or import a CSV.'}
+    </div>`;
+    return;
+  }
+
+  body.innerHTML = contacts.map(c => {
+    const openLeads = state.crm.leads.filter(l => l.contact_id === c.id && l.status === 'open').length;
+    const initials  = _crmInitials(c.name);
+    const selected  = state.crm.selectedContactId === c.id ? ' selected' : '';
+    return `<div class="crm-row${selected}" onclick="openContactPanel('${c.id}')">
+      <div class="crm-row-name-cell">
+        <div class="crm-avatar">${initials}</div>
+        <div style="min-width:0;">
+          <div class="crm-row-name">${esc(c.name)}</div>
+        </div>
+      </div>
+      <div class="crm-row-cell">${esc(c.phone||'—')}</div>
+      <div class="crm-row-cell">${esc(c.email||'—')}</div>
+      <div>
+        ${openLeads
+          ? `<span class="crm-badge crm-badge-open">${openLeads} lead${openLeads>1?'s':''}</span>`
+          : `<span class="crm-badge-none">—</span>`}
+      </div>
+      <div class="crm-row-actions" onclick="event.stopPropagation()">
+        <button class="crm-icon-btn" title="Add lead" onclick="openAddLeadModal('${c.id}')">+</button>
+        <button class="crm-icon-btn danger" title="Delete" onclick="deleteContact('${c.id}')">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function openContactPanel(contactId) {
+  state.crm.selectedContactId = contactId;
+  // Highlight row
+  document.querySelectorAll('.crm-row').forEach(r =>
+    r.classList.toggle('selected', r.getAttribute('onclick') === `openContactPanel('${contactId}')`)
+  );
+  _renderContactDetail(contactId);
+}
+
+function _renderContactDetail(contactId) {
+  const pane = document.getElementById('crm-detail-pane');
+  if (!pane) return;
+  const contact = state.crm.contacts.find(c => c.id === contactId);
+  if (!contact) { pane.classList.remove('visible'); return; }
+
+  const leads = state.crm.leads.filter(l => l.contact_id === contactId);
+  const initials = _crmInitials(contact.name);
+
+  const leadRows = leads.length === 0
+    ? `<div style="color:var(--muted);font-size:13px;padding:4px 0;">No leads yet.</div>`
+    : leads.map(l => {
+        const pip = _crmPipeline(l.pipeline_id);
+        const stageName = l.status === 'open' ? _crmStageName(pip, l.stage) : '';
+        return `<div class="crm-contact-row" onclick="openLeadModal('${l.id}')" style="cursor:pointer;padding:8px 0;border-bottom:1px solid var(--border);">
+          <div>
+            <div class="crm-row-name">${esc(l.pipeline_name||l.pipeline_id)}${l.work_title ? ' — ' + esc(l.work_title) : ''}</div>
+            <div class="crm-row-sub">${stageName ? esc(stageName) + ' · ' : ''}R${(l.value||0).toLocaleString()}</div>
+          </div>
+          ${_statusBadge(l.status, pip)}
+        </div>`;
+      }).join('');
+
+  pane.classList.add('visible');
+  pane.innerHTML = `
+    <div class="crm-detail-header">
+      <div class="crm-detail-avatar">${initials}</div>
+      <div style="flex:1;min-width:0;">
+        <div class="crm-detail-name">${esc(contact.name)}</div>
+        <div class="crm-detail-meta">${esc(contact.phone||'')}${contact.email ? '<br>'+esc(contact.email) : ''}</div>
+      </div>
+      <button class="crm-icon-btn" title="Close" onclick="closeContactDetail()" style="font-size:16px;">✕</button>
+    </div>
+    ${contact.notes ? `
+      <div class="crm-detail-section">
+        <div class="crm-detail-section-title">Notes</div>
+        <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;">${esc(contact.notes)}</div>
+      </div>` : ''}
+    <div class="crm-detail-section">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <div class="crm-detail-section-title" style="margin-bottom:0;">Leads</div>
+        <button class="btn-primary" style="font-size:11px;padding:4px 12px;" onclick="openAddLeadModal('${contactId}')">+ New Lead</button>
+      </div>
+      <div>${leadRows}</div>
+    </div>
+    <div class="crm-detail-actions">
+      <button class="btn-secondary" style="font-size:12px;color:var(--danger,#e74c3c);border-color:var(--danger,#e74c3c);"
+        onclick="deleteContact('${contactId}')">Delete Contact</button>
+    </div>`;
+}
+
+function closeContactDetail() {
+  state.crm.selectedContactId = null;
+  const pane = document.getElementById('crm-detail-pane');
+  if (pane) pane.classList.remove('visible');
+  document.querySelectorAll('.crm-row.selected').forEach(r => r.classList.remove('selected'));
+}
+
+async function deleteContact(id) {
+  if (!confirm('Delete this contact and all their leads?')) return;
+  try {
+    await fetch(`/api/crm/contacts/${id}`, { method: 'DELETE' });
+    state.crm.contacts = state.crm.contacts.filter(c => c.id !== id);
+    state.crm.leads    = state.crm.leads.filter(l => l.contact_id !== id);
+    if (state.crm.selectedContactId === id) closeContactDetail();
+    renderCRMContacts();
+    toast('Contact deleted.', 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Add Lead modal ──────────────────────────────────────────────────────────
+
+// Cache of catalog works for the lead modal (loaded once per modal open)
+let _leadModalWorks = [];
+
+async function openAddLeadModal(contactId) {
+  const contact = state.crm.contacts.find(c => c.id === contactId);
+  const pipOpts = state.crm.pipelines.map(p =>
+    `<option value="${p.id}">${esc(p.name)}</option>`
+  ).join('');
+
+  // Load catalog works for dropdown population
+  try {
+    const data = await GET('/api/catalog-works');
+    _leadModalWorks = data.works || [];
+  } catch(_) { _leadModalWorks = []; }
+
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">New Lead</div>
+    <div style="color:var(--text-secondary);font-size:13px;margin:-8px 0 14px;">${contact ? esc(contact.name) : ''}</div>
+    <label class="modal-label">Pipeline *</label>
+    <select id="al-pipeline" class="modal-input" onchange="onLeadPipelineChange('${contactId}')">${pipOpts}</select>
+    <label class="modal-label" id="al-work-label">Product / Work</label>
+    <div id="al-work-field"></div>
+    <label class="modal-label">Value (R)</label>
+    <input id="al-value" class="modal-input" type="number" min="0" placeholder="0" value="0">
+    <label class="modal-label">Notes</label>
+    <textarea id="al-notes" class="modal-input" rows="2"></textarea>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="submitAddLead('${contactId}')">Save</button>
+    </div>`;
+  showModal();
+  // Trigger initial render of the work field for the default pipeline
+  onLeadPipelineChange(contactId);
+}
+
+function onLeadPipelineChange(contactId) {
+  const pipSelect = document.getElementById('al-pipeline');
+  const workField = document.getElementById('al-work-field');
+  const workLabel = document.getElementById('al-work-label');
+  const valueEl   = document.getElementById('al-value');
+  if (!pipSelect || !workField) return;
+
+  const pip = state.crm.pipelines.find(p => p.id === pipSelect.value);
+  const workType = pip ? pip.work_type : null;
+
+  // Find matching works from catalog for this pipeline's work type
+  const matchingWorks = workType
+    ? _leadModalWorks.filter(w => w.work_type === workType)
+    : [];
+
+  if (matchingWorks.length > 0) {
+    // Show a dropdown — first option is blank (no selection)
+    const opts = `<option value="">— Select —</option>` +
+      matchingWorks.map(w =>
+        `<option value="${esc(w.title)}" data-price="${w.price||0}">${esc(w.title)}${w.price ? ` (R${w.price})` : ''}</option>`
+      ).join('');
+    workField.innerHTML = `<select id="al-work" class="modal-input" onchange="onLeadWorkChange()">${opts}</select>`;
+    workLabel.textContent = `Product / Work`;
+  } else {
+    // Free-text fallback for pipelines with no matching catalog works
+    workField.innerHTML = `<input id="al-work" class="modal-input" placeholder="e.g. Autumn Retreat 2026">`;
+    workLabel.textContent = `Product / Work (optional)`;
+    if (valueEl) valueEl.value = '0';
+  }
+}
+
+function onLeadWorkChange() {
+  const workSel = document.getElementById('al-work');
+  const valueEl = document.getElementById('al-value');
+  if (!workSel || !valueEl) return;
+  const selected = workSel.options[workSel.selectedIndex];
+  const price = selected ? parseFloat(selected.dataset.price || 0) : 0;
+  if (price > 0) valueEl.value = price;
+}
+
+async function submitAddLead(contactId) {
+  const pipeline_id = document.getElementById('al-pipeline').value;
+  const workEl      = document.getElementById('al-work');
+  const work_title  = workEl ? (workEl.value || '').trim() : '';
+  const value       = parseFloat(document.getElementById('al-value').value) || 0;
+  const notes       = document.getElementById('al-notes').value.trim();
+  try {
+    const r = await POST('/api/crm/leads', { contact_id: contactId, pipeline_id, work_title, value, notes });
+    if (r.error) { toast(r.error, 'error'); return; }
+    state.crm.leads.push(r);
+    closeModal();
+    toast('Lead created.', 'success');
+    _refreshCRMTable();
+    if (state.crm.selectedContactId === contactId) _renderContactDetail(contactId);
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function importContactsCSV(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  input.value = '';
+  try {
+    const r = await fetch('/api/crm/contacts/import', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (d.error) { toast(d.error, 'error'); return; }
+    toast(`Imported ${d.imported} contact(s)${d.skipped ? `, skipped ${d.skipped}` : ''}.`, 'success');
+    const cRes = await GET('/api/crm/contacts');
+    state.crm.contacts = cRes.contacts || [];
+    renderCRMContacts();
+  } catch(e) { toast('Import failed: ' + e.message, 'error'); }
+}
+
+// ── Phone normalizer ───────────────────────────────────────────────────────────
+// Converts common phone formats to E.164. Defaults to South Africa (+27).
+// Returns empty string when the format is unrecognisable.
+function _normalizePhone(raw) {
+  if (!raw) return '';
+  let s = raw.trim();
+
+  // Scientific notation e.g. "2.5472E+11" → integer string
+  if (/^\d[\d.]*[eE][+\-]?\d+$/.test(s)) {
+    try { s = Math.round(Number(s)).toString(); }
+    catch(_) { return ''; }
+  }
+
+  const hasPlus = s.startsWith('+');
+  const digits  = s.replace(/\D/g, '');
+  if (digits.length < 7) return '';          // too short to be valid
+
+  // Already has explicit + country code — just strip formatting
+  if (hasPlus) {
+    const e164 = '+' + digits;
+    return /^\+\d{7,15}$/.test(e164) ? e164 : '';
+  }
+
+  // International prefix 00XX…
+  if (digits.startsWith('00') && digits.length >= 9) {
+    const e164 = '+' + digits.slice(2);
+    return /^\+\d{7,15}$/.test(e164) ? e164 : '';
+  }
+
+  // SA with country code, no +: starts with 27, 11–12 digits
+  if (digits.startsWith('27') && digits.length >= 11 && digits.length <= 12) {
+    return '+' + digits;
+  }
+
+  // SA local: starts with 0, exactly 10 digits (e.g. 082 123 4567)
+  if (digits.startsWith('0') && digits.length === 10) {
+    return '+27' + digits.slice(1);
+  }
+
+  // SA mobile without leading 0: 9 digits starting with 6, 7, or 8
+  if (/^[678]/.test(digits) && digits.length === 9) {
+    return '+27' + digits;
+  }
+
+  // Looks like a full international number (no country-code clue): 11–15 digits
+  if (digits.length >= 11 && digits.length <= 15) {
+    return '+' + digits;
+  }
+
+  return '';   // can't normalise confidently — leave for manual entry
+}
+
+// ── macOS Contacts autocomplete ────────────────────────────────────────────────
+// Attaches a debounced name-autocomplete to an Add Contact modal.
+// nameId/phoneId/emailId/suggestionsId are element IDs set by the caller.
+// Also attaches a blur normalizer to the phone field.
+function _attachMacOSAutocomplete(nameId, phoneId, emailId, suggestionsId) {
+  const nameEl  = document.getElementById(nameId);
+  const phoneEl = document.getElementById(phoneId);
+  const sugEl   = document.getElementById(suggestionsId);
+  if (!nameEl || !sugEl) return;
+
+  let _timer = null;
+  let _results = [];
+
+  nameEl.addEventListener('input', () => {
+    clearTimeout(_timer);
+    const q = nameEl.value.trim();
+    if (q.length < 2) { sugEl.style.display = 'none'; return; }
+    _timer = setTimeout(async () => {
+      try {
+        const r = await GET(`/api/macos/contacts/search?q=${encodeURIComponent(q)}`);
+        _results = (r && r.contacts) ? r.contacts : [];
+        if (_results.length === 0) { sugEl.style.display = 'none'; return; }
+        sugEl.innerHTML = _results.map((c, i) => {
+          const normPhone = _normalizePhone(c.phone);
+          const display   = normPhone || c.phone;
+          return `
+          <div data-idx="${i}" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border);"
+               onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background=''">
+            <div style="font-weight:500;font-size:13px;">${c.name}</div>
+            ${(display || c.email) ? `<div style="font-size:11px;color:var(--muted);">${[display, c.email].filter(Boolean).join(' · ')}</div>` : ''}
+          </div>`;
+        }).join('');
+        sugEl.style.display = 'block';
+
+        sugEl.querySelectorAll('[data-idx]').forEach(el => {
+          el.addEventListener('mousedown', e => {
+            e.preventDefault();
+            const chosen = _results[parseInt(el.dataset.idx)];
+            document.getElementById(nameId).value  = chosen.name  || '';
+            document.getElementById(phoneId).value = _normalizePhone(chosen.phone) || chosen.phone || '';
+            document.getElementById(emailId).value = chosen.email || '';
+            sugEl.style.display = 'none';
+          });
+        });
+      } catch(_) { /* ignore autocomplete errors silently */ }
+    }, 300);
+  });
+
+  nameEl.addEventListener('blur', () => {
+    // Small delay so mousedown on a suggestion fires first
+    setTimeout(() => { sugEl.style.display = 'none'; }, 200);
+  });
+
+  // Normalise phone on blur (works for both autocomplete-filled and manually typed)
+  if (phoneEl) {
+    phoneEl.addEventListener('blur', () => {
+      const normalized = _normalizePhone(phoneEl.value);
+      if (normalized) phoneEl.value = normalized;
+    });
+  }
+}
+
+function openAddContactModal() {
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">Add Contact</div>
+    <label class="modal-label">Name *</label>
+    <div style="position:relative;">
+      <input id="cac-name" class="modal-input" placeholder="Full name" autocomplete="off">
+      <div id="cac-suggestions" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--bg);border:1px solid var(--border);border-radius:4px;z-index:200;max-height:200px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,0.15);"></div>
+    </div>
+    <label class="modal-label">Phone (E.164)</label>
+    <input id="cac-phone" class="modal-input" placeholder="+27821234567">
+    <label class="modal-label">Email</label>
+    <input id="cac-email" class="modal-input" placeholder="email@example.com">
+    <label class="modal-label">Notes</label>
+    <textarea id="cac-notes" class="modal-input" rows="2" placeholder="Optional notes"></textarea>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="submitAddContact()">Save</button>
+    </div>`;
+  showModal();
+  _attachMacOSAutocomplete('cac-name', 'cac-phone', 'cac-email', 'cac-suggestions');
+}
+
+async function submitAddContact() {
+  const name  = document.getElementById('cac-name').value.trim();
+  const phone = document.getElementById('cac-phone').value.trim();
+  const email = document.getElementById('cac-email').value.trim();
+  const notes = document.getElementById('cac-notes').value.trim();
+  if (!name) { toast('Name is required', 'error'); return; }
+  try {
+    const r = await POST('/api/crm/contacts', { name, phone, email, notes });
+    if (r.error) { toast(r.error, 'error'); return; }
+    state.crm.contacts.push(r);
+    closeModal();
+    renderCRMContacts();
+    toast('Contact added.', 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Lead detail modal ──────────────────────────────────────────────────────
+async function openLeadModal(leadId) {
+  try {
+    const l = await GET(`/api/crm/leads/${leadId}`);
+    const idx = state.crm.leads.findIndex(x => x.id === leadId);
+    if (idx >= 0) state.crm.leads[idx] = l;
+    _renderLeadModal(l);
+    // Auto-sync inbound replies in the background; re-render if new messages arrive
+    _autoSyncInbound(leadId);
+  } catch(e) { toast('Could not load lead', 'error'); }
+}
+
+async function _autoSyncInbound(leadId) {
+  try {
+    const r = await POST('/api/crm/leads/sync_inbound', {});
+    if (r.synced > 0) {
+      // New replies arrived — silently re-render if this lead is still open
+      const fresh = await GET(`/api/crm/leads/${leadId}`);
+      const idx = state.crm.leads.findIndex(x => x.id === leadId);
+      if (idx >= 0) state.crm.leads[idx] = fresh;
+      if (document.getElementById('sync-replies-btn')) _renderLeadModal(fresh);
+    }
+  } catch(_) { /* silent — auto-sync failures should never disrupt the UI */ }
+}
+
+async function syncInboundReplies(leadId) {
+  const btn = document.getElementById('sync-replies-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '↻ Syncing…'; }
+  try {
+    const r = await POST('/api/crm/leads/sync_inbound', {});
+    if (r.error) { toast(r.error, 'error'); return; }
+    if (r.synced > 0) {
+      const fresh = await GET(`/api/crm/leads/${leadId}`);
+      const idx = state.crm.leads.findIndex(x => x.id === leadId);
+      if (idx >= 0) state.crm.leads[idx] = fresh;
+      _renderLeadModal(fresh);
+      toast(`${r.synced} new repl${r.synced === 1 ? 'y' : 'ies'} synced.`, 'success');
+    } else {
+      toast('No new replies.', 'info');
+      if (btn) { btn.disabled = false; btn.textContent = '↻ Sync replies'; }
+    }
+  } catch(e) {
+    toast('Sync failed: ' + e.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Sync replies'; }
+  }
+}
+
+async function generateLeadMessage(leadId) {
+  const btn  = document.getElementById('generate-msg-btn');
+  const area = document.getElementById('log-msg-content');
+  const hint = document.getElementById('tone-note-hint');
+  if (btn) { btn.disabled = true; btn.textContent = '✨ Generating…'; }
+  if (hint) hint.textContent = '';
+  try {
+    const r = await POST(`/api/crm/leads/${leadId}/generate_message`, {});
+    if (r.error) { toast(r.error, 'error'); return; }
+    if (area) area.value = r.message || '';
+    if (hint && r.tone_note) hint.textContent = r.tone_note;
+    if (area) area.focus();
+  } catch(e) {
+    toast('Generation failed: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '✨ Generate'; }
+  }
+}
+
+function _renderLeadModal(lead) {
+  const pip     = _crmPipeline(lead.pipeline_id);
+  const contact = state.crm.contacts.find(c => c.id === lead.contact_id);
+
+  // Stage selector (only if open)
+  let stageHtml = '';
+  if (lead.status === 'open' && pip) {
+    const opts = pip.stages.map(s =>
+      `<option value="${s.code}" ${s.code === lead.stage ? 'selected' : ''}>${esc(s.name)}</option>`
+    ).join('');
+    stageHtml = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+        <label style="font-size:12px;color:var(--text-secondary);white-space:nowrap;">Stage</label>
+        <select class="modal-input" style="margin:0;flex:1;" onchange="moveleadStage('${lead.id}', this.value)">${opts}</select>
+      </div>`;
+  }
+
+  // Close buttons
+  let closeHtml = '';
+  if (lead.status === 'open' && pip) {
+    const wonLabel  = pip.won_label  || 'Won';
+    const lostLabel = pip.lost_label || 'Lost';
+    closeHtml = `
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
+        <button class="btn-primary" style="font-size:12px;background:#27ae60;border-color:#27ae60;"
+          onclick="closeLead('${lead.id}','won')">✓ Mark ${esc(wonLabel)}</button>
+        <button class="btn-secondary" style="font-size:12px;color:#e74c3c;"
+          onclick="closeLead('${lead.id}','lost')">✗ Mark ${esc(lostLabel)}</button>
+        ${pip.allow_cancelled ? `<button class="btn-secondary" style="font-size:12px;color:#e67e22;"
+          onclick="closeLead('${lead.id}','cancelled')">Cancel Subscription</button>` : ''}
+      </div>`;
+  } else if (lead.status !== 'open') {
+    closeHtml = `
+      <div style="margin-bottom:16px;">
+        <button class="btn-secondary" style="font-size:12px;" onclick="reopenLead('${lead.id}')">↩ Re-open Lead</button>
+      </div>`;
+  }
+
+  // Communication log
+  const log = (lead.communication_log || []).slice().sort((a, b) =>
+    (a.sent_at || '').localeCompare(b.sent_at || '')
+  );
+  const logRows = log.length === 0
+    ? `<div style="color:var(--text-secondary);font-size:13px;padding:8px 0;">No messages logged yet.</div>`
+    : log.map(e => {
+        const isInbound = e.direction === 'inbound';
+        const ts = new Date(e.sent_at).toLocaleString('en-ZA',
+          {timeZone:'Africa/Johannesburg',dateStyle:'short',timeStyle:'short'});
+        const badge = isInbound
+          ? `<span style="font-size:10px;background:#1a5276;color:#aed6f1;padding:1px 5px;border-radius:3px;margin-right:4px;">↩ Reply</span>`
+          : (e.status === 'scheduled'
+              ? `<span style="font-size:10px;background:#7d6608;color:#f9e79f;padding:1px 5px;border-radius:3px;margin-right:4px;">🕐 Scheduled</span>`
+              : (e.status === 'failed'
+                  ? `<span style="font-size:10px;background:#641e16;color:#f1948a;padding:1px 5px;border-radius:3px;margin-right:4px;">✗ Failed</span>`
+                  : (e.logged_via === 'crm'
+                      ? `<span style="font-size:10px;background:#145a32;color:#a9dfbf;padding:1px 5px;border-radius:3px;margin-right:4px;">📲 Sent</span>`
+                      : `<span style="font-size:10px;background:#4a235a;color:#d2b4de;padding:1px 5px;border-radius:3px;margin-right:4px;">✍️ Manual</span>`)));
+        return `
+        <div style="border-bottom:1px solid var(--border);padding:8px 0 8px ${isInbound?'0':'24px'};font-size:13px;
+                    ${isInbound ? 'background:rgba(26,82,118,0.08);border-radius:4px;padding:8px;margin:4px 0;' : ''}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+            <span style="color:var(--text-secondary);font-size:11px;">
+              ${badge}${ts}${isInbound && e.contact_name ? ' · ' + esc(e.contact_name) : ''}
+            </span>
+            <button onclick="deleteLogEntry('${lead.id}','${e.id}')"
+              style="background:none;border:none;cursor:pointer;color:var(--text-secondary);font-size:11px;padding:0;flex-shrink:0;">✕</button>
+          </div>
+          <div style="margin-top:4px;">${esc(e.content)}</div>
+        </div>`;
+      }).join('');
+
+  document.getElementById('modal-content').innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
+      <div>
+        <h3 style="margin:0;">${esc(lead.contact_name)}</h3>
+        <div style="color:var(--text-secondary);font-size:13px;margin-top:2px;">
+          ${esc(lead.pipeline_name||lead.pipeline_id)}
+          ${lead.work_title ? ' — ' + esc(lead.work_title) : ''}
+          · R${(lead.value||0).toLocaleString()}
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        ${_statusBadge(lead.status, pip)}
+      </div>
+    </div>
+
+    ${stageHtml}
+    ${closeHtml}
+
+    ${lead.notes ? `<p style="font-size:13px;color:var(--text-secondary);margin:0 0 16px;padding:8px;background:var(--bg-secondary);border-radius:6px;">${esc(lead.notes)}</p>` : ''}
+
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <h4 style="margin:0;font-size:13px;">Communication Log</h4>
+      <button id="sync-replies-btn" class="btn-secondary"
+        style="font-size:11px;padding:3px 10px;"
+        onclick="syncInboundReplies('${lead.id}')">↻ Sync replies</button>
+    </div>
+    <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:0 12px;margin-bottom:12px;">
+      ${logRows}
+    </div>
+
+    <div style="border:1px solid var(--border);border-radius:6px;padding:12px;background:var(--bg-secondary);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <span style="font-size:12px;color:var(--text-secondary);">Message</span>
+        <button id="generate-msg-btn" class="btn-secondary" style="font-size:11px;padding:3px 10px;"
+          onclick="generateLeadMessage('${lead.id}')">✨ Generate</button>
+      </div>
+      <textarea id="log-msg-content" rows="3" placeholder="Type a message or click ✨ Generate…"
+        style="width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:4px;
+               padding:8px;font-size:13px;background:var(--bg);color:var(--text);resize:vertical;"></textarea>
+      <div id="tone-note-hint" style="font-size:11px;color:var(--text-secondary);margin-top:4px;min-height:16px;font-style:italic;"></div>
+      <div style="display:flex;gap:8px;margin-top:8px;justify-content:flex-end;">
+        <button class="btn-secondary" style="font-size:12px;"
+          onclick="logMessage('${lead.id}','manual')">✍️ Log Manually</button>
+        <button class="btn-secondary" style="font-size:12px;"
+          onclick="openScheduleModal('${lead.id}')">🕐 Send Later</button>
+        <button class="btn-primary" style="font-size:12px;background:#25D366;border-color:#25D366;"
+          onclick="logMessage('${lead.id}','crm')">📲 Send Now</button>
+      </div>
+    </div>
+
+    <div style="display:flex;justify-content:flex-end;margin-top:12px;">
+      <button class="btn-secondary" style="font-size:12px;color:var(--error,#e74c3c);"
+        onclick="deleteLead('${lead.id}')">Delete Lead</button>
+    </div>`;
+  showModal();
+}
+
+async function moveleadStage(leadId, stage) {
+  try {
+    const r = await fetch(`/api/crm/leads/${leadId}/stage`, {
+      method: 'PUT', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ stage })
+    }).then(r => r.json());
+    if (r.error) { toast(r.error, 'error'); return; }
+    const idx = state.crm.leads.findIndex(l => l.id === leadId);
+    if (idx >= 0) state.crm.leads[idx] = r;
+    toast('Stage updated.', 'success');
+    renderCRMPipeline();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function closeLead(leadId, outcome) {
+  const labels = { won: 'Won', lost: 'Lost', cancelled: 'Cancelled' };
+  if (!confirm(`Mark this lead as ${labels[outcome]}?`)) return;
+  try {
+    const r = await POST(`/api/crm/leads/${leadId}/close`, { outcome });
+    if (r.error) { toast(r.error, 'error'); return; }
+    const idx = state.crm.leads.findIndex(l => l.id === leadId);
+    if (idx >= 0) state.crm.leads[idx] = r;
+    closeModal();
+    renderCRMPipeline();
+    renderCRMContacts();
+    toast(`Lead marked ${labels[outcome]}.`, 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function reopenLead(leadId) {
+  try {
+    const r = await POST(`/api/crm/leads/${leadId}/reopen`, {});
+    if (r.error) { toast(r.error, 'error'); return; }
+    const idx = state.crm.leads.findIndex(l => l.id === leadId);
+    if (idx >= 0) state.crm.leads[idx] = r;
+    closeModal();
+    toast('Lead re-opened.', 'success');
+    renderCRMPipeline();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function deleteLead(leadId) {
+  if (!confirm('Delete this lead?')) return;
+  try {
+    await fetch(`/api/crm/leads/${leadId}`, { method: 'DELETE' });
+    state.crm.leads = state.crm.leads.filter(l => l.id !== leadId);
+    closeModal();
+    renderCRMContacts();
+    renderCRMPipeline();
+    toast('Lead deleted.', 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function logMessage(leadId, via, scheduledAt = null) {
+  const content = (document.getElementById('log-msg-content')||{}).value?.trim();
+  if (!content) { toast('Enter a message first.', 'error'); return; }
+  const lead = state.crm.leads.find(l => l.id === leadId);
+  const body = { content, logged_via: via, contact_name: lead?.contact_name || '' };
+  if (scheduledAt) body.scheduled_at = scheduledAt;
+  try {
+    const r = await POST(`/api/crm/leads/${leadId}/messages`, body);
+    if (r.error) { toast(r.error, 'error'); return; }
+    const fresh = await GET(`/api/crm/leads/${leadId}`);
+    const idx = state.crm.leads.findIndex(l => l.id === leadId);
+    if (idx >= 0) state.crm.leads[idx] = fresh;
+    closeModal();
+    _renderLeadModal(fresh);
+    if (scheduledAt) {
+      const localStr = new Date(scheduledAt).toLocaleString('en-ZA', {timeZone:'Africa/Johannesburg',dateStyle:'short',timeStyle:'short'});
+      toast(`Scheduled for ${localStr} (SAST).`, 'success');
+    } else {
+      toast(via === 'crm' ? 'Message sent & logged.' : 'Message logged.', 'success');
+    }
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+function openScheduleModal(leadId) {
+  const content = (document.getElementById('log-msg-content')||{}).value?.trim();
+  if (!content) { toast('Enter a message first.', 'error'); return; }
+
+  // Default to today at 16:00 local time
+  const now = new Date();
+  const defaultDate = now.toLocaleDateString('en-CA'); // YYYY-MM-DD
+  const defaultTime = '16:00';
+
+  const existing = document.getElementById('crm-schedule-popup');
+  if (existing) existing.remove();
+
+  const popup = document.createElement('div');
+  popup.id = 'crm-schedule-popup';
+  popup.style.cssText = `position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+    background:var(--surface,#1e1e2e);border:1px solid var(--border);border-radius:10px;
+    padding:24px;z-index:10000;min-width:300px;box-shadow:0 8px 40px rgba(0,0,0,0.5);`;
+  popup.innerHTML = `
+    <h3 style="margin:0 0 18px;font-size:15px;font-weight:600;">Schedule Send</h3>
+    <label style="display:block;margin-bottom:4px;font-size:12px;color:var(--text-secondary);">Date</label>
+    <input type="date" id="sched-date" value="${defaultDate}"
+      style="width:100%;box-sizing:border-box;padding:8px;border:1px solid var(--border);
+             border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;margin-bottom:14px;">
+    <label style="display:block;margin-bottom:4px;font-size:12px;color:var(--text-secondary);">Time (SAST)</label>
+    <input type="time" id="sched-time" value="${defaultTime}"
+      style="width:100%;box-sizing:border-box;padding:8px;border:1px solid var(--border);
+             border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;margin-bottom:20px;">
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn-secondary" style="font-size:13px;"
+        onclick="document.getElementById('crm-schedule-popup').remove()">Cancel</button>
+      <button class="btn-primary" style="font-size:13px;background:#25D366;border-color:#25D366;"
+        onclick="confirmScheduleSend('${leadId}')">Schedule Send</button>
+    </div>`;
+  document.body.appendChild(popup);
+}
+
+async function confirmScheduleSend(leadId) {
+  const date = document.getElementById('sched-date')?.value;
+  const time = document.getElementById('sched-time')?.value;
+  if (!date || !time) { toast('Select a date and time.', 'error'); return; }
+
+  // Parse as SAST (UTC+2): construct local datetime then shift to UTC
+  const sastOffset = 2 * 60; // minutes
+  const localDt = new Date(`${date}T${time}:00`);
+  // Adjust: the user intends this to be SAST, convert to UTC ISO
+  const utcMs = localDt.getTime() - (localDt.getTimezoneOffset() + sastOffset) * 60000;
+  // Actually just trust the browser locale — user's machine is SAST
+  // Use the local date/time directly as if it's SAST
+  const scheduledDt = new Date(`${date}T${time}:00`);
+  if (scheduledDt <= new Date()) {
+    toast('Scheduled time must be in the future.', 'error');
+    return;
+  }
+
+  const isoStr = scheduledDt.toISOString();
+  document.getElementById('crm-schedule-popup')?.remove();
+  await logMessage(leadId, 'crm', isoStr);
+}
+
+async function deleteLogEntry(leadId, msgId) {
+  try {
+    await fetch(`/api/crm/leads/${leadId}/messages/${msgId}`, { method: 'DELETE' });
+    const fresh = await GET(`/api/crm/leads/${leadId}`);
+    const idx = state.crm.leads.findIndex(l => l.id === leadId);
+    if (idx >= 0) state.crm.leads[idx] = fresh;
+    closeModal();
+    _renderLeadModal(fresh);
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// TAB 2 — PIPELINE
+// ───────────────────────────────────────────────────────────────────────────
+
+function renderCRMPipeline() {
+  const el = document.getElementById('people-tab-pipeline');
+  if (!el) return;
+  const pipelines = state.crm.pipelines;
+  if (!pipelines.length) {
+    el.innerHTML = `<div style="padding:40px;text-align:center;color:var(--text-secondary);">No pipelines configured.</div>`;
+    return;
+  }
+
+  if (!state.crm.activePipeline) state.crm.activePipeline = pipelines[0].id;
+  const activePid = state.crm.activePipeline;
+  const pip       = _crmPipeline(activePid);
+  if (!pip) return;
+
+  // Pipeline tabs — prominent underline active state
+  const tabs = pipelines.map(p =>
+    `<button class="crm-pipeline-tab ${p.id === activePid ? 'active' : ''}"
+       onclick="state.crm.activePipeline='${p.id}';renderCRMPipeline()">${esc(p.name)}</button>`
+  ).join('');
+
+  // Open leads in this pipeline
+  const openLeads  = state.crm.leads.filter(l => l.pipeline_id === activePid && l.status === 'open');
+  const totalValue = openLeads.reduce((s, l) => s + (l.value || 0), 0);
+
+  // Build Kanban columns
+  const cols = pip.stages.map(stage => {
+    const cards      = openLeads.filter(l => l.stage === stage.code);
+    const stageValue = cards.reduce((s, l) => s + (l.value || 0), 0);
+    const valuePct   = totalValue > 0 ? Math.round(stageValue / totalValue * 100) : 0;
+
+    const cardHtml = cards.length === 0
+      ? `<div class="crm-kanban-empty">
+           No leads here yet.<br>
+           <span class="crm-kanban-empty-action"
+             onclick="openAddLeadForStage('${activePid}','${stage.code}')">+ Add lead</span>
+         </div>`
+      : cards.map(l => `
+          <div class="crm-lead-card" onclick="openLeadModal('${l.id}')">
+            <div class="crm-lead-card-top">
+              <div class="crm-lead-avatar">${_crmInitials(l.contact_name)}</div>
+              <div class="crm-lead-body">
+                <div class="crm-lead-name">${esc(l.contact_name)}</div>
+                ${l.work_title ? `<div class="crm-lead-work">${esc(l.work_title)}</div>` : ''}
+              </div>
+            </div>
+            <div class="crm-lead-footer">
+              <span class="crm-lead-pill crm-lead-value-pill">R${(l.value||0).toLocaleString()}</span>
+              <span class="crm-lead-pill crm-lead-days-pill">${_daysSince(l.updated_at) || '—'}</span>
+            </div>
+          </div>`).join('');
+
+    return `
+      <div class="crm-kanban-col">
+        <div class="crm-kanban-header-top">
+          <span class="crm-kanban-header-stage">${esc(stage.name)}</span>
+          <div class="crm-kanban-header-right">
+            <span class="crm-kanban-count">${cards.length}</span>
+            <button class="crm-kanban-add" title="Add lead"
+              onclick="event.stopPropagation();openAddLeadForStage('${activePid}','${stage.code}')">+</button>
+          </div>
+        </div>
+        <div class="crm-kanban-header-value">R${stageValue.toLocaleString()}</div>
+        <div class="crm-kanban-value-bar">
+          <div class="crm-kanban-value-bar-fill" style="width:${valuePct}%"></div>
+        </div>
+        <div class="crm-kanban-cards">${cardHtml}</div>
+      </div>`;
+  }).join('');
+
+  // Closed leads summary
+  const wonLeads       = state.crm.leads.filter(l => l.pipeline_id === activePid && l.status === 'won');
+  const lostLeads      = state.crm.leads.filter(l => l.pipeline_id === activePid && l.status === 'lost');
+  const cancelledLeads = state.crm.leads.filter(l => l.pipeline_id === activePid && l.status === 'cancelled');
+
+  el.innerHTML = `
+    <div>
+      <div class="crm-pipeline-tabs">${tabs}</div>
+      <div style="padding:16px;">
+        <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
+          <div class="crm-stat-pill crm-stat-green">
+            ${esc(pip.won_label||'Won')}: ${wonLeads.length}
+            <span style="opacity:.7;font-size:11px;"> · R${wonLeads.reduce((s,l)=>s+(l.value||0),0).toLocaleString()}</span>
+          </div>
+          <div class="crm-stat-pill crm-stat-red">
+            ${esc(pip.lost_label||'Lost')}: ${lostLeads.length}
+          </div>
+          ${pip.allow_cancelled && cancelledLeads.length ? `
+          <div class="crm-stat-pill crm-stat-orange">
+            ${esc(pip.cancelled_label||'Cancelled')}: ${cancelledLeads.length}
+          </div>` : ''}
+        </div>
+        <div class="crm-kanban">${cols}</div>
+      </div>
+    </div>`;
+}
+
+async function openAddLeadForStage(pipelineId, stageCode) {
+  // Load catalog works
+  try {
+    const data = await GET('/api/catalog-works');
+    _leadModalWorks = data.works || [];
+  } catch(_) { _leadModalWorks = []; }
+
+  const contactOpts = state.crm.contacts.map(c =>
+    `<option value="${c.id}">${esc(c.name)}${c.phone ? ' · ' + esc(c.phone) : ''}</option>`
+  ).join('');
+
+  if (!contactOpts) {
+    toast('Add a contact first before creating a lead.', 'error');
+    return;
+  }
+
+  const pipOpts = state.crm.pipelines.map(p =>
+    `<option value="${p.id}" ${p.id === pipelineId ? 'selected' : ''}>${esc(p.name)}</option>`
+  ).join('');
+
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">New Lead</div>
+    <label class="modal-label">Contact *</label>
+    <select id="al-contact-pick" class="modal-input">
+      <option value="">— Select contact —</option>
+      ${contactOpts}
+    </select>
+    <label class="modal-label">Pipeline *</label>
+    <select id="al-pipeline" class="modal-input" onchange="onLeadPipelineChange(null)">${pipOpts}</select>
+    <label class="modal-label" id="al-work-label">Product / Work</label>
+    <div id="al-work-field"></div>
+    <label class="modal-label">Value (R)</label>
+    <input id="al-value" class="modal-input" type="number" min="0" placeholder="0" value="0">
+    <label class="modal-label">Notes</label>
+    <textarea id="al-notes" class="modal-input" rows="2"></textarea>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="submitAddLeadFromKanban()">Save</button>
+    </div>`;
+  showModal();
+  onLeadPipelineChange(null);
+}
+
+async function submitAddLeadFromKanban() {
+  const contactId   = document.getElementById('al-contact-pick')?.value;
+  const pipeline_id = document.getElementById('al-pipeline').value;
+  const workEl      = document.getElementById('al-work');
+  const work_title  = workEl ? (workEl.value || '').trim() : '';
+  const value       = parseFloat(document.getElementById('al-value').value) || 0;
+  const notes       = document.getElementById('al-notes').value.trim();
+  if (!contactId) { toast('Select a contact.', 'error'); return; }
+  try {
+    const r = await POST('/api/crm/leads', { contact_id: contactId, pipeline_id, work_title, value, notes });
+    if (r.error) { toast(r.error, 'error'); return; }
+    state.crm.leads.push(r);
+    closeModal();
+    toast('Lead created.', 'success');
+    renderCRMPipeline();
+    _refreshCRMTable();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+function _daysSince(isoStr) {
+  if (!isoStr) return '';
+  const diff = Math.floor((Date.now() - new Date(isoStr)) / 86400000);
+  if (diff === 0) return 'today';
+  if (diff === 1) return '1d ago';
+  return `${diff}d ago`;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// TAB 3 — OUTREACH
+// ───────────────────────────────────────────────────────────────────────────
+
+async function renderCRMOutreach() {
+  const el = document.getElementById('people-tab-outreach');
+  if (!el) return;
+  el.innerHTML = `<div class="loading-pulse" style="padding:40px;text-align:center;">Loading…</div>`;
+
+  // Sync any scheduled messages that EC2 has now sent, so stats are up to date
+  try { await POST('/api/crm/outreach/sync_scheduled', {}); } catch(e) { /* non-fatal */ }
+
+  const ws = state.crm.weekStart || '';
+  try {
+    const data = await GET(`/api/crm/outreach/weekly${ws ? '?week_start=' + ws : ''}`);
+    _renderOutreachView(el, data);
+  } catch(e) {
+    el.innerHTML = `<div style="padding:40px;color:var(--error);">Could not load outreach data.</div>`;
+  }
+}
+
+function _renderOutreachView(el, data) {
+  const target     = data.target || 0;
+  const total      = data.grand_total || 0;
+  const pct        = target > 0 ? Math.min(100, Math.round(total / target * 100)) : 0;
+  const barColor   = data.hit_target ? '#27ae60' : total >= target * 0.7 ? '#e67e22' : '#e74c3c';
+  const statusIcon = data.hit_target ? '✅' : '❌';
+
+  const tableRows = (data.rows || []).map(row =>
+    `<tr>
+      <td style="padding:6px 12px 6px 0;font-size:13px;font-weight:500;">${esc(row.pipeline_name)}</td>
+      ${row.daily.map(v => `<td style="padding:6px 8px;text-align:center;font-size:13px;${v>0?'font-weight:600;color:var(--text)':'color:var(--text-secondary)'};">${v||'—'}</td>`).join('')}
+      <td style="padding:6px 0 6px 8px;text-align:right;font-size:13px;font-weight:600;">${row.total}</td>
+    </tr>`
+  ).join('');
+
+  const totalRow = `
+    <tr style="border-top:2px solid var(--border);">
+      <td style="padding:6px 12px 6px 0;font-size:13px;font-weight:700;">Total</td>
+      ${data.total_by_day.map(v => `<td style="padding:6px 8px;text-align:center;font-size:13px;font-weight:600;">${v||'—'}</td>`).join('')}
+      <td style="padding:6px 0 6px 8px;text-align:right;font-size:13px;font-weight:700;">${total}</td>
+    </tr>`;
+
+  const dayHeaders = data.days.map(d =>
+    `<th style="padding:6px 8px;font-size:12px;color:var(--text-secondary);font-weight:500;">${d}</th>`
+  ).join('');
+
+  // Week navigation
+  const monday = new Date(data.week_start + 'T00:00:00');
+  const prevMonday = new Date(monday); prevMonday.setDate(monday.getDate() - 7);
+  const nextMonday = new Date(monday); nextMonday.setDate(monday.getDate() + 7);
+  const weekLabel = monday.toLocaleDateString('en-ZA', { day:'numeric', month:'short', year:'numeric' });
+
+  el.innerHTML = `
+    <div style="max-width:680px;margin:0 auto;padding:20px 16px;">
+
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
+        <h2 style="margin:0;">Outreach</h2>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button class="btn-secondary" style="font-size:12px;padding:5px 10px;"
+            onclick="state.crm.weekStart='${prevMonday.toISOString().slice(0,10)}';renderCRMOutreach()">‹</button>
+          <span style="font-size:13px;font-weight:500;">Week of ${weekLabel}</span>
+          <button class="btn-secondary" style="font-size:12px;padding:5px 10px;"
+            onclick="state.crm.weekStart='${nextMonday.toISOString().slice(0,10)}';renderCRMOutreach()">›</button>
+          <button class="btn-secondary" style="font-size:12px;"
+            onclick="state.crm.weekStart=null;renderCRMOutreach()">Today</button>
+        </div>
+      </div>
+
+      <div class="hub-panel" style="margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+          <div style="font-size:13px;">
+            <strong>${total}</strong> /
+            <span style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;"
+              onclick="editWeeklyTarget()"><strong>${target}</strong> target</span>
+            &nbsp;${statusIcon}
+          </div>
+          <div style="font-size:12px;color:var(--text-secondary);">${pct}%</div>
+        </div>
+        <div style="height:10px;background:var(--bg-secondary);border-radius:5px;overflow:hidden;">
+          <div style="height:100%;width:${pct}%;background:${barColor};border-radius:5px;transition:width .3s;"></div>
+        </div>
+      </div>
+
+      <div class="hub-panel" style="overflow-x:auto;margin-bottom:16px;">
+        <table style="border-collapse:collapse;width:100%;min-width:400px;">
+          <thead><tr>
+            <th style="padding:6px 12px 6px 0;text-align:left;font-size:12px;color:var(--text-secondary);">Pipeline</th>
+            ${dayHeaders}
+            <th style="padding:6px 0 6px 8px;text-align:right;font-size:12px;color:var(--text-secondary);">Total</th>
+          </tr></thead>
+          <tbody>${tableRows}${totalRow}</tbody>
+        </table>
+      </div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn-primary" onclick="openLogManualModal()" style="font-size:13px;">
+          + Log Message
+        </button>
+        <button class="btn-secondary" onclick="generateWeeklyReport('${data.week_start}')" style="font-size:13px;">
+          Copy Weekly Report
+        </button>
+      </div>
+    </div>`;
+}
+
+function editWeeklyTarget() {
+  const current = state.crm.settings.weekly_outreach_target || 20;
+  const val = prompt('Set weekly outreach target:', current);
+  if (val === null) return;
+  const n = parseInt(val);
+  if (isNaN(n) || n < 0) { toast('Enter a valid number.', 'error'); return; }
+  fetch('/api/crm/settings', {
+    method: 'PUT', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ weekly_outreach_target: n })
+  }).then(r => r.json()).then(d => {
+    state.crm.settings.weekly_outreach_target = d.weekly_outreach_target;
+    toast(`Target updated to ${d.weekly_outreach_target}.`, 'success');
+    renderCRMOutreach();
+  });
+}
+
+async function generateWeeklyReport(weekStart) {
+  try {
+    const ws  = weekStart ? '?week_start=' + weekStart : '';
+    const res = await GET(`/api/crm/outreach/report${ws}`);
+    await navigator.clipboard.writeText(res.report);
+    toast('Report copied to clipboard.', 'success');
+  } catch(e) { toast('Could not copy: ' + e.message, 'error'); }
+}
+
+function openLogManualModal() {
+  const pipOpts = state.crm.pipelines.map(p =>
+    `<option value="${p.id}">${esc(p.name)}</option>`
+  ).join('');
+  const contactOpts = state.crm.contacts.map(c =>
+    `<option value="${c.id}">${esc(c.name)}${c.phone?' ('+c.phone+')':''}</option>`
+  ).join('');
+
+  const html = `
+    <div class="modal-overlay" id="crm-log-manual-modal" onclick="if(event.target===this)closeModal('crm-log-manual-modal')">
+      <div class="modal-box" style="max-width:440px;">
+        <h3 style="margin:0 0 16px;">Log Outreach Message</h3>
+        <label class="modal-label">Contact *</label>
+        <select id="lm-contact" class="modal-input" onchange="populateLeadPicker()">
+          <option value="">— select contact —</option>
+          ${contactOpts}
+        </select>
+        <label class="modal-label">Lead / Pipeline *</label>
+        <select id="lm-lead" class="modal-input">
+          <option value="">— select a contact first —</option>
+        </select>
+        <label class="modal-label">Message *</label>
+        <textarea id="lm-content" class="modal-input" rows="3" placeholder="What did you send?"></textarea>
+        <label class="modal-label">Sent at</label>
+        <input id="lm-sent-at" class="modal-input" type="datetime-local"
+          value="${new Date().toISOString().slice(0,16)}">
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+          <button class="btn-secondary" onclick="closeModal('crm-log-manual-modal')">Cancel</button>
+          <button class="btn-primary" onclick="submitLogManual()">Log</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function populateLeadPicker() {
+  const contactId = document.getElementById('lm-contact').value;
+  const sel = document.getElementById('lm-lead');
+  const leads = state.crm.leads.filter(l => l.contact_id === contactId && l.status === 'open');
+  sel.innerHTML = leads.length
+    ? leads.map(l => `<option value="${l.id}">${esc(l.pipeline_name||l.pipeline_id)}${l.work_title?' — '+esc(l.work_title):''}</option>`).join('')
+    : `<option value="">No open leads for this contact</option>`;
+}
+
+async function submitLogManual() {
+  const leadId  = document.getElementById('lm-lead').value;
+  const content = document.getElementById('lm-content').value.trim();
+  const sentAt  = document.getElementById('lm-sent-at').value;
+  if (!leadId)  { toast('Select a lead.', 'error');    return; }
+  if (!content) { toast('Enter a message.', 'error'); return; }
+
+  const lead   = state.crm.leads.find(l => l.id === leadId);
+  const sentIso = sentAt ? new Date(sentAt).toISOString() : new Date().toISOString();
+  try {
+    const r = await POST(`/api/crm/leads/${leadId}/messages`, {
+      content, logged_via: 'manual',
+      contact_name: lead?.contact_name || '',
+      sent_at: sentIso,
+    });
+    if (r.error) { toast(r.error, 'error'); return; }
+    const fresh = await GET(`/api/crm/leads/${leadId}`);
+    const idx = state.crm.leads.findIndex(l => l.id === leadId);
+    if (idx >= 0) state.crm.leads[idx] = fresh;
+    closeModal('crm-log-manual-modal');
+    toast('Message logged.', 'success');
+    renderCRMOutreach();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// TAB 4 — DASHBOARD
+// ───────────────────────────────────────────────────────────────────────────
+
+async function renderCRMDashboard() {
+  const el = document.getElementById('people-tab-dashboard');
+  if (!el) return;
+  el.innerHTML = `<div class="loading-pulse" style="padding:40px;text-align:center;">Loading…</div>`;
+  try {
+    const data = await GET('/api/crm/dashboard');
+    _renderDashboardView(el, data);
+  } catch(e) {
+    el.innerHTML = `<div style="padding:40px;color:var(--error);">Could not load dashboard.</div>`;
+  }
+}
+
+function _renderDashboardView(el, data) {
+  const rev = data.revenue || {};
+  const fmt = n => `R${(n||0).toLocaleString()}`;
+
+  const revCards = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:24px;">
+      <div class="crm-stat-card">
+        <div class="crm-stat-label">Won (all time)</div>
+        <div class="crm-stat-value crm-stat-green">${fmt(rev.won_all_time)}</div>
+      </div>
+      <div class="crm-stat-card">
+        <div class="crm-stat-label">Won (this month)</div>
+        <div class="crm-stat-value crm-stat-green">${fmt(rev.won_this_month)}</div>
+      </div>
+      <div class="crm-stat-card">
+        <div class="crm-stat-label">Lost</div>
+        <div class="crm-stat-value crm-stat-red">${fmt(rev.lost_all_time)}</div>
+      </div>
+      <div class="crm-stat-card">
+        <div class="crm-stat-label">In Pipeline</div>
+        <div class="crm-stat-value">${fmt(rev.pipeline_value)}</div>
+      </div>
+      <div class="crm-stat-card">
+        <div class="crm-stat-label">Contacts</div>
+        <div class="crm-stat-value">${data.total_contacts}</div>
+      </div>
+      <div class="crm-stat-card">
+        <div class="crm-stat-label">Open Leads</div>
+        <div class="crm-stat-value">${data.open_leads}</div>
+      </div>
+    </div>`;
+
+  const pipelineSections = Object.entries(data.pipelines || {}).map(([pid, pdata]) => {
+    const rows = pdata.breakdown.map(s => {
+      const barW = pdata.open > 0 ? Math.round(s.count / Math.max(...pdata.breakdown.map(x=>x.count), 1) * 100) : 0;
+      return `
+        <div style="margin-bottom:10px;">
+          <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px;">
+            <span>${esc(s.stage)}</span>
+            <span style="color:var(--text-secondary);">${s.count} lead${s.count!==1?'s':''} · ${fmt(s.value)}</span>
+          </div>
+          <div style="height:6px;background:var(--bg-secondary);border-radius:3px;overflow:hidden;">
+            <div style="height:100%;width:${barW}%;background:var(--p2,#3498db);border-radius:3px;"></div>
+          </div>
+        </div>`;
+    }).join('');
+
+    return `
+      <div class="hub-panel" style="margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3 style="margin:0;font-size:15px;">${esc(pdata.name)}</h3>
+          <div style="font-size:12px;color:var(--text-secondary);">
+            Open: ${pdata.open} · Won: ${pdata.won} · Lost: ${pdata.lost}
+          </div>
+        </div>
+        ${rows}
+      </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="max-width:700px;margin:0 auto;padding:20px 16px;">
+      <h2 style="margin:0 0 16px;">Dashboard</h2>
+      <div class="hub-panel" style="margin-bottom:16px;">${revCards}</div>
+      ${pipelineSections}
+    </div>`;
+}
+
+
+async function loadPeople_DEPRECATED() {
+  // kept to avoid reference errors — actual loadPeople is above
+}
+
+
+async function serializeModule(moduleId) {
+  // Called from Producing/module-detail panel — take user to PROMOTING → Works
+  await switchMode('promoting');
+  toast('Select the matching work and use Serialize Content to split it into WA chunks.', 'info');
 }

@@ -27,6 +27,21 @@ def open_browser():
     webbrowser.open(URL)
 
 if __name__ == '__main__':
+    # Load user environment from .zshrc
+    import subprocess
+    try:
+        env_cmd = 'source ~/.zshrc && env'
+        env_output = subprocess.check_output(
+            env_cmd, shell=True, executable='/bin/zsh'
+        ).decode()
+        for line in env_output.splitlines():
+            if '=' in line:
+                key, _, val = line.partition('=')
+                if key not in os.environ:
+                    os.environ[key] = val
+    except Exception as e:
+        print(f'[Env load warning] {e}')
+
     # Load plugins before starting
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

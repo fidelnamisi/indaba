@@ -51,13 +51,23 @@ def register_blueprints():
     from routes.promo_settings import bp as promo_settings_bp
     from routes.publishing         import bp as publishing_bp
     from routes.website_publisher  import bp as website_publisher_bp
+    from routes.asset_register     import bp as asset_register_bp
+    from routes.work_types         import bp as work_types_bp
+    from routes.audio              import bp as audio_bp
+    from routes.flash_fiction      import bp as flash_fiction_bp
+    from routes.scheduler_agent    import bp as scheduler_agent_bp
+    from routes.crm_people         import bp as crm_people_bp
+    from routes.git_ops            import bp as git_ops_bp
+    from routes.macos_contacts     import bp as macos_contacts_bp
 
     for bp in [
         core_bp, assets_bp,
         pipeline_bp, crm_bp, promo_contacts_bp, promo_leads_bp,
         works_bp, promo_messages_bp, promo_sender_bp,
         promo_proverbs_bp, promo_broadcast_post_bp, promo_settings_bp,
-        publishing_bp, website_publisher_bp,
+        publishing_bp, website_publisher_bp, asset_register_bp, work_types_bp,
+        audio_bp, flash_fiction_bp, scheduler_agent_bp, crm_people_bp,
+        git_ops_bp, macos_contacts_bp,
     ]:
         app.register_blueprint(bp)
 
@@ -69,7 +79,31 @@ def static_files(filename):
     return send_from_directory(os.path.join(BASE_DIR, 'static'), filename)
 
 
+@app.route('/data/images/<path:filename>')
+def serve_generated_image(filename):
+    """Serve generated header images — used by GOWA (via host.docker.internal) to fetch images."""
+    return send_from_directory(os.path.join(BASE_DIR, 'data', 'generated_images'), filename)
+
+
 register_blueprints()
+
+
+def _migrate_synopsis_to_modules():
+    """Ensure every existing pipeline module has all register-defined supporting assets."""
+    from utils.json_store import read_json, write_json
+    from routes.asset_register import supporting_keys_for_work_type
+    pipeline = read_json('content_pipeline.json') or []
+    changed = False
+    for entry in pipeline:
+        work_type = entry.get('work_type', 'Book')
+        ps = entry.setdefault('producing_status', {})
+        sa = ps.setdefault('supporting_assets', {})
+        for key in supporting_keys_for_work_type(work_type):
+            if key not in sa:
+                sa[key] = 'missing'
+                changed = True
+    if changed:
+        write_json('content_pipeline.json', pipeline)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -105,6 +139,7 @@ if __name__ == '__main__':
 
     load_plugins()
     migrate()
+    _migrate_synopsis_to_modules()
     retry_failed_messages()
     sync_existing_data_to_assets()
 

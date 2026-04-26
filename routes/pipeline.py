@@ -22,17 +22,53 @@ def get_content_pipeline():
 
 @bp.route('/api/content-pipeline', methods=['POST'])
 def add_pipeline_entry():
-    data     = request.get_json()
-    pipeline = read_json('content_pipeline.json') or []
-    entry    = {
+    from routes.asset_register import supporting_keys_for_work_type
+    data      = request.get_json()
+    pipeline  = read_json('content_pipeline.json') or []
+    work_type = data.get('work_type', 'Book')
+
+    # Subscription is a CRM construct — it has no modules.
+    NO_MODULE_TYPES = {'Subscription'}
+    if work_type in NO_MODULE_TYPES:
+        return jsonify({'error': f'{work_type} works do not have modules. Manage them via the CRM pipeline.'}), 400
+
+    # Initialize supporting_assets from the Asset Register for this work type.
+    # Merge: preserve any keys the caller explicitly sent, then fill in missing ones.
+    sent_ps  = data.get('producing_status', {})
+    sent_sa  = sent_ps.get('supporting_assets', {})
+    register_sa = supporting_keys_for_work_type(work_type)
+    # Register wins for keys not already in sent_sa
+    merged_sa = {**register_sa, **sent_sa}
+
+    # Auto-assign chapter_number if not provided
+    chapter_number = data.get('chapter_number')
+    if not chapter_number:
+        book = data.get('book', '')
+        chapter_number = max(
+            (e.get('chapter_number') or 0 for e in pipeline if e.get('book') == book),
+            default=0
+        ) + 1
+
+    entry = {
         'id':                str(uuid.uuid4()),
         'chapter':           data.get('chapter', ''),
+        'book':              data.get('book', ''),
+        'chapter_number':    chapter_number,
+        'work_type':         work_type,
+        'workflow_stage':    data.get('workflow_stage', 'producing'),
         'vip_group_status':  data.get('vip_group_status', 'not_started'),
         'patreon_status':    data.get('patreon_status', 'not_started'),
         'website_status':    data.get('website_status', 'not_started'),
         'wa_channel_status': data.get('wa_channel_status', 'not_started'),
         'assets':            data.get('assets', {}),
         'notes':             data.get('notes', ''),
+        'producing_status':  {
+            'essential_asset':  sent_ps.get('essential_asset', 'missing'),
+            'supporting_assets': merged_sa,
+        },
+        'publishing_status':  data.get('publishing_status', {}),
+        'promoting_status':   data.get('promoting_status', {}),
+        'serializer_chunks':  data.get('serializer_chunks', []),
     }
     pipeline.append(entry)
     write_json('content_pipeline.json', pipeline)
@@ -122,15 +158,139 @@ def update_publishing_status(entry_id):
     return jsonify({'error': 'Not found'}), 404
 
 
+# ── Serializer chunks ────────────────────────────────────────────────────────
+
+@bp.route('/api/content-pipeline/<entry_id>/serialize', methods=['POST'])
+def serialize_module(entry_id):
+    """
+    AI-split the module's essential asset (prose) into delivery chunks.
+    Accepts optional body: { num_chunks: int, target_words: int, append: bool }
+    """
+    import json as _json
+    import re as _re
+    from services.ai_service import call_ai
+    from utils.constants import BOOK_SERIALIZER_FIXED_PROMPT
+
+    body         = request.get_json() or {}
+    num_chunks   = int(body.get('num_chunks', 3))
+    target_words = int(body.get('target_words', 300))
+    append_mode  = bool(body.get('append', False))
+
+    pipeline = read_json('content_pipeline.json') or []
+    entry = next((e for e in pipeline if e['id'] == entry_id), None)
+    if not entry:
+        return jsonify({'error': 'Not found'}), 404
+
+    # Determine prose field based on work type
+    PROSE_FIELD = {
+        'Book':                 'prose',
+        'Podcast':              'audio_notes',
+        'Fundraising Campaign': 'campaign_narrative',
+        'Retreat (Event)':      'event_offer',
+        'Subscription':         'edition_content',
+    }
+    prose_key = PROSE_FIELD.get(entry.get('work_type', 'Book'), 'prose')
+    prose = (entry.get('assets') or {}).get(prose_key, '').strip()
+    if not prose:
+        return jsonify({'error': f'No content found (looking for "{prose_key}"). Upload the essential asset first.'}), 400
+
+    title             = entry.get('chapter', 'Untitled')
+    existing_chunks   = entry.get('serializer_chunks', [])
+    start_part        = (len(existing_chunks) + 1) if append_mode else 1
+
+    system_prompt = BOOK_SERIALIZER_FIXED_PROMPT.format(
+        work_title=title,
+        start_part=start_part,
+        num_chunks=num_chunks,
+        target_words=target_words,
+    )
+
+    try:
+        raw = call_ai('work_serializer', [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user',   'content': f'Story text to split:\n\n{prose}'},
+        ], max_tokens=4000)
+    except Exception as e:
+        return jsonify({'error': f'AI call failed: {e}'}), 500
+
+    # Strip code fences if present
+    clean = raw.strip()
+    clean = _re.sub(r'^```(?:json)?\s*', '', clean, flags=_re.MULTILINE)
+    clean = _re.sub(r'\s*```\s*$',       '', clean, flags=_re.MULTILINE)
+    clean = clean.strip()
+
+    try:
+        data_json    = _json.loads(clean)
+        segment_list = data_json.get('chunks', [])
+    except Exception as e:
+        return jsonify({'error': f'Could not parse AI response as JSON: {e}', 'raw': raw[:500]}), 500
+
+    now    = datetime.utcnow().isoformat() + 'Z'
+    chunks = []
+    for c in segment_list:
+        content = c.get('content', '').replace('\\n', '\n')
+        chunks.append({
+            'id':               str(uuid.uuid4()),
+            'content':          content,
+            'cliffhanger_note': c.get('cliffhanger_note', ''),
+            'status':           'pending',
+            'word_count':       len(content.split()),
+            'created_at':       now,
+            'message_id':       None,
+        })
+
+    # Save: replace or append
+    for i, e in enumerate(pipeline):
+        if e['id'] == entry_id:
+            if append_mode:
+                pipeline[i].setdefault('serializer_chunks', []).extend(chunks)
+            else:
+                pipeline[i]['serializer_chunks'] = chunks
+            write_json('content_pipeline.json', pipeline)
+            break
+
+    saved = pipeline[next(j for j, e in enumerate(pipeline) if e['id'] == entry_id)]['serializer_chunks']
+    return jsonify({'chunks': saved, 'count': len(saved)})
+
+
+@bp.route('/api/content-pipeline/<entry_id>/serializer-chunks/<chunk_id>', methods=['PUT'])
+def update_serializer_chunk(entry_id, chunk_id):
+    """Update a single serializer chunk (status, content, etc.)."""
+    data     = request.get_json() or {}
+    pipeline = read_json('content_pipeline.json') or []
+    for i, e in enumerate(pipeline):
+        if e['id'] == entry_id:
+            chunks = e.get('serializer_chunks', [])
+            for j, c in enumerate(chunks):
+                if c['id'] == chunk_id:
+                    chunks[j] = {**c, **data, 'id': chunk_id}
+                    pipeline[i]['serializer_chunks'] = chunks
+                    write_json('content_pipeline.json', pipeline)
+                    return jsonify(chunks[j])
+            return jsonify({'error': 'Chunk not found'}), 404
+    return jsonify({'error': 'Not found'}), 404
+
+
 # ── Catalog Works (contentSchema — domain-model Works, not serializer Works) ──
 
 import re as _re
 
 @bp.route('/api/catalog-works', methods=['GET'])
 def list_catalog_works():
-    """Return all Works from catalog_works.json with their module counts."""
+    """Return all Works from catalog_works.json with their module counts.
+
+    Query params:
+      work_type=<type>   — filter to a specific work type (e.g. Subscription)
+      has_modules=true   — only return works that support modules
+    """
     catalog  = read_json('catalog_works.json') or {'works': []}
     pipeline = read_json('content_pipeline.json') or []
+
+    wt_filter  = request.args.get('work_type', '').strip()
+    has_modules_filter = request.args.get('has_modules', '').lower() == 'true'
+
+    # Work types that do NOT have modules — Subscription is CRM-only
+    NO_MODULE_TYPES = {'Subscription'}
 
     # Build module count per work code
     count_by_code = {}
@@ -140,23 +300,33 @@ def list_catalog_works():
 
     works = []
     for w in catalog.get('works', []):
+        wtype = w.get('work_type', '')
+        if wt_filter and wtype != wt_filter:
+            continue
+        if has_modules_filter and wtype in NO_MODULE_TYPES:
+            continue
+
         entry = dict(w)
+        entry['has_modules']  = wtype not in NO_MODULE_TYPES
+        entry['price']        = w.get('price', 0)
         entry['module_count'] = count_by_code.get(w['id'], 0)
-        # Include the modules themselves for the hierarchical view
-        entry['modules'] = [
-            {
-                'id':             e['id'],
-                'title':          e.get('chapter', ''),
-                'chapter_number': e.get('chapter_number', 0),
-                'workflow_stage': e.get('workflow_stage', 'producing'),
-                'website_status': e.get('website_status', 'not_started'),
-                'website_publish_info': e.get('website_publish_info'),
-                'has_prose':      bool((e.get('assets') or {}).get('prose', '').strip()),
-            }
-            for e in pipeline if e.get('book') == w['id']
-        ]
-        # Sort by chapter_number
-        entry['modules'].sort(key=lambda m: m.get('chapter_number', 0))
+        # Include the modules themselves for works that support them
+        if entry['has_modules']:
+            entry['modules'] = [
+                {
+                    'id':             e['id'],
+                    'title':          e.get('chapter', ''),
+                    'chapter_number': e.get('chapter_number', 0),
+                    'workflow_stage': e.get('workflow_stage', 'producing'),
+                    'website_status': e.get('website_status', 'not_started'),
+                    'website_publish_info': e.get('website_publish_info'),
+                    'has_prose':      bool((e.get('assets') or {}).get('prose', '').strip()),
+                }
+                for e in pipeline if e.get('book') == w['id']
+            ]
+            entry['modules'].sort(key=lambda m: m.get('chapter_number') or 0)
+        else:
+            entry['modules'] = []
         works.append(entry)
 
     return jsonify({'works': works})
@@ -332,6 +502,43 @@ def _bulk_import_chapters(work_code, text):
     if imported:
         write_json('content_pipeline.json', pipeline)
     return imported
+
+
+@bp.route('/api/catalog-works/<work_id>', methods=['PUT'])
+def update_catalog_work(work_id):
+    """Update Work metadata (title, genre, patreon_url, website_url, author)."""
+    data    = request.get_json() or {}
+    catalog = read_json('catalog_works.json') or {'works': []}
+    for i, w in enumerate(catalog.get('works', [])):
+        if w['id'] == work_id:
+            allowed = {'title', 'genre', 'patreon_url', 'website_url', 'author'}
+            for k in allowed:
+                if k in data:
+                    catalog['works'][i][k] = data[k]
+            write_json('catalog_works.json', catalog)
+            return jsonify(catalog['works'][i])
+    return jsonify({'error': 'Not found'}), 404
+
+
+@bp.route('/api/catalog-works/<work_id>', methods=['DELETE'])
+def delete_catalog_work(work_id):
+    """Delete a Work from the catalog and all its pipeline modules."""
+    catalog  = read_json('catalog_works.json') or {'works': []}
+    pipeline = read_json('content_pipeline.json') or []
+    catalog['works'] = [w for w in catalog.get('works', []) if w['id'] != work_id]
+    pipeline         = [e for e in pipeline if e.get('book') != work_id]
+    write_json('catalog_works.json', catalog)
+    write_json('content_pipeline.json', pipeline)
+    return jsonify({'ok': True})
+
+
+@bp.route('/api/content-pipeline/<entry_id>', methods=['GET'])
+def get_pipeline_entry(entry_id):
+    pipeline = read_json('content_pipeline.json') or []
+    for e in pipeline:
+        if e['id'] == entry_id:
+            return jsonify(e)
+    return jsonify({'error': 'Not found'}), 404
 
 
 # ── Notes ─────────────────────────────────────────────────────────────────────

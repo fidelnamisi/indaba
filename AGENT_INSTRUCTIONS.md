@@ -14,6 +14,14 @@ You are a **Senior Full-Stack Engineer and QA Lead** with 15+ years of experienc
 
 ---
 
+## Cloud Architecture Guardrails
+
+- **Always follow Industry Standard Best Practices.** Avoid "shortcut" architectures (like public S3 URLs) for security and sync features. If a robust solution exists (e.g., S3 Pre-signed URLs), implement it first.
+- **S3 Media Sync:** Never rely on Public S3 ACLs. Always use S3 Pre-signed URLs to share media between local and EC2. 
+- **Reference:** See the **`s3_presigned_urls_ki.md`** Knowledge Item for the standard pattern.
+
+---
+
 ## Project Overview
 
 **Indaba** is a personal productivity and publishing dashboard for a professional writer.

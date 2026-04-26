@@ -13,9 +13,11 @@
   <div class="topbar-left">
     <div class="logo">Indaba</div>
     <nav class="topbar-nav" id="top-nav">
-      <button class="mode-btn active" data-mode="producing" onclick="switchMode('producing')">PRODUCING</button>
-      <button class="mode-btn" data-mode="publishing" onclick="switchMode('publishing')">PUBLISHING</button>
-      <button class="mode-btn" data-mode="promoting" onclick="switchMode('promoting')">PROMOTING</button>
+      <button class="mode-btn active" data-mode="panorama"   onclick="switchMode('panorama')">PANORAMA</button>
+      <button class="mode-btn"        data-mode="producing"  onclick="switchMode('producing')">PRODUCING</button>
+      <button class="mode-btn"        data-mode="publishing" onclick="switchMode('publishing')">PUBLISHING</button>
+      <button class="mode-btn"        data-mode="promoting"  onclick="switchMode('promoting')">PROMOTING</button>
+      <button class="mode-btn"        data-mode="people"     onclick="switchMode('people')">PEOPLE</button>
     </nav>
     <div id="topbar-date" class="topbar-date"></div>
   </div>
@@ -27,17 +29,32 @@
     <button class="icon-btn" id="btn-log"      title="Event Log">Log</button>
     <button class="icon-btn" id="btn-help"     title="Help / Reference">?</button>
     <button class="icon-btn" id="btn-settings" title="Settings">⚙</button>
+    <button class="icon-btn" id="btn-git-push" title="Push to GitHub" onclick="gitPush()">↑git</button>
   </div>
 </header>
 
 <!-- ── MAIN ────────────────────────────────────────────────────── -->
 <div id="main-content">
 
-  <!-- MODE: PRODUCING (Content Workflow Overview — metric cards + drill-down) -->
-  <div id="view-producing" class="mode-view">
-    <div id="producing-container" class="view-container">
-      <!-- loadProducing(): dashboard metric cards + drill-down -->
+  <!-- MODE: PANORAMA (All modules grid — quick-view on click) -->
+  <div id="view-panorama" class="mode-view">
+    <div id="panorama-container" class="view-container"></div>
+  </div>
+
+  <!-- MODE: PRODUCING (Pipeline + Flash Fiction + Proverbs sub-tabs) -->
+  <div id="view-producing" class="mode-view" style="display:none;">
+    <div class="producing-subtab-bar">
+      <button class="producing-subtab-btn active" data-producing-tab="pipeline"      onclick="switchProducingTab('pipeline')">Pipeline</button>
+      <button class="producing-subtab-btn"         data-producing-tab="flash-fiction" onclick="switchProducingTab('flash-fiction')">Flash Fiction</button>
+      <button class="producing-subtab-btn"         data-producing-tab="proverbs"      onclick="switchProducingTab('proverbs')">Proverbs</button>
     </div>
+    <div id="producing-tab-pipeline">
+      <div id="producing-container" class="view-container">
+        <!-- loadProducing(): dashboard metric cards + drill-down -->
+      </div>
+    </div>
+    <div id="producing-tab-flash-fiction" style="display:none;"></div>
+    <div id="producing-tab-proverbs" style="display:none;"></div>
   </div>
 
   <!-- MODE: PUBLISHING (Hierarchical Works → Modules list) -->
@@ -47,34 +64,42 @@
     </div>
   </div>
 
-  <!-- MODE: PROMOTING (Broadcast layer + CRM layer) -->
+  <!-- MODE: PROMOTING (Works at promoting stage + Outbox) -->
   <div id="view-promoting" class="mode-view" style="display:none;">
     <div class="manage-layout">
       <div class="manage-sidebar">
         <div class="promo-tab-bar">
-          <div class="promo-tab-group-label">BROADCAST</div>
-          <button class="promo-tab-btn active" data-promo-tab="broadcast-posts" onclick="switchPromoTab('broadcast-posts')">Broadcast Posts</button>
-          <button class="promo-tab-btn" data-promo-tab="message-maker" onclick="switchPromoTab('message-maker')">Messages</button>
-          <button class="promo-tab-btn" data-promo-tab="sender" onclick="switchPromoTab('sender')">Outbox</button>
-          <button class="promo-tab-btn" data-promo-tab="book-serializer" onclick="switchPromoTab('book-serializer')">Serializer</button>
-          <div class="promo-tab-divider"></div>
-          <div class="promo-tab-group-label">CRM</div>
-          <button class="promo-tab-btn" data-promo-tab="contacts" onclick="switchPromoTab('contacts')">Contacts</button>
-          <button class="promo-tab-btn" data-promo-tab="leads" onclick="switchPromoTab('leads')">Leads</button>
+          <button class="promo-tab-btn active" data-promo-tab="works"  onclick="switchPromoTab('works')">Works</button>
+          <button class="promo-tab-btn"         data-promo-tab="sender" onclick="switchPromoTab('sender')">Outbox</button>
         </div>
       </div>
       <div class="manage-body">
-        <div id="promo-view-broadcast-posts" class="promo-view-container"></div>
-        <div id="promo-view-message-maker" class="promo-view-container" style="display:none"></div>
+        <div id="promo-view-works"  class="promo-view-container"></div>
         <div id="promo-view-sender" class="promo-view-container" style="display:none"></div>
-        <div id="promo-view-book-serializer" class="promo-view-container" style="display:none"></div>
-        <div id="promo-view-contacts" class="promo-view-container" style="display:none"></div>
-        <div id="promo-view-leads" class="promo-view-container" style="display:none"></div>
-        <!-- Kept for compatibility; not in sidebar -->
-        <div id="promo-view-command-center" class="promo-view-container" style="display:none"></div>
-        <div id="promo-view-promo-settings" class="promo-view-container" style="display:none"></div>
+        <!-- Hidden legacy containers kept for compatibility -->
+        <div id="promo-view-broadcast-posts"  class="promo-view-container" style="display:none"></div>
+        <div id="promo-view-message-maker"    class="promo-view-container" style="display:none"></div>
+        <div id="promo-view-book-serializer"  class="promo-view-container" style="display:none"></div>
+        <div id="promo-view-contacts"         class="promo-view-container" style="display:none"></div>
+        <div id="promo-view-leads"            class="promo-view-container" style="display:none"></div>
+        <div id="promo-view-command-center"   class="promo-view-container" style="display:none"></div>
+        <div id="promo-view-promo-settings"   class="promo-view-container" style="display:none"></div>
       </div>
     </div>
+  </div>
+
+  <!-- MODE: PEOPLE — CRM (Contacts, Pipeline, Outreach, Dashboard) -->
+  <div id="view-people" class="mode-view" style="display:none;">
+    <div class="sub-tab-bar">
+      <button class="sub-tab-btn active" data-tab="contacts"  onclick="switchPeopleTab('contacts')">Contacts</button>
+      <button class="sub-tab-btn"        data-tab="pipeline"  onclick="switchPeopleTab('pipeline')">Pipeline</button>
+      <button class="sub-tab-btn"        data-tab="outreach"  onclick="switchPeopleTab('outreach')">Outreach</button>
+      <button class="sub-tab-btn"        data-tab="dashboard" onclick="switchPeopleTab('dashboard')">Dashboard</button>
+    </div>
+    <div id="people-tab-contacts"  class="people-tab-pane view-container"></div>
+    <div id="people-tab-pipeline"  class="people-tab-pane view-container" style="display:none;"></div>
+    <div id="people-tab-outreach"  class="people-tab-pane view-container" style="display:none;"></div>
+    <div id="people-tab-dashboard" class="people-tab-pane view-container" style="display:none;"></div>
   </div>
 
 </div>
@@ -91,6 +116,8 @@
       <button class="settings-tab-btn"         data-settings-tab="ai"       onclick="switchSettingsTab('ai')">AI Providers</button>
       <button class="settings-tab-btn"         data-settings-tab="schedule" onclick="switchSettingsTab('schedule')">Schedule</button>
       <button class="settings-tab-btn"         data-settings-tab="website"  onclick="switchSettingsTab('website')">Website</button>
+      <button class="settings-tab-btn"         data-settings-tab="prompts"   onclick="switchSettingsTab('prompts')">AI Prompts</button>
+      <button class="settings-tab-btn"         data-settings-tab="registry"  onclick="switchSettingsTab('registry')">Registry</button>
     </div>
     <div id="settings-modal-body">
       <!-- Loaded dynamically by loadSettingsModal() -->

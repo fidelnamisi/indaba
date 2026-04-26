@@ -2,6 +2,118 @@
 
 ---
 
+## 2026-04-21 — EC2 Queue: Reschedule + Bulk Delete
+
+### What Changed
+
+Two UX improvements to the EC2 Sender status dashboard (`http://13.218.60.13:5555/status`):
+
+**1. Reschedule (inline edit)**
+Clicking the scheduled time cell on any queued/failed row now reveals an inline datetime picker (pre-filled with current SAST time). Save converts back to UTC and calls `PUT /queue/<id>`. Cancel reverts to display mode. FIFO (unscheduled) rows also support this — clicking "FIFO" opens the picker so a schedule can be set.
+
+**2. Bulk delete via checkboxes**
+A checkbox column is now the leftmost column of the table. Checkboxes appear only for queued/failed rows. A "Select all" checkbox sits in the header. When one or more rows are checked, a red "Delete selected (N)" button appears above the table. Clicking it calls the new `POST /queue/bulk-delete` endpoint with the selected IDs.
+
+**New endpoint:**
+`POST /queue/bulk-delete` — accepts a JSON array of message IDs, removes them all from `queue.json` in one operation.
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `indaba-ec2/tmp/sender.py` | Added `POST /queue/bulk-delete` endpoint; rewrote `status_page()` with checkbox column, inline reschedule widget, and bulk delete bar |
+
+### Deployed
+Deployed to EC2 via SCP + `systemctl restart indaba-sender`. Health check confirmed 6 queued messages intact.
+
+---
+
+## 2026-04-21 — Live EC2 Queue as Scheduling Source of Truth
+
+### Problem
+
+When new proverbs were scheduled (bulk approve or single queue), the scheduler read `promo_messages.json` to determine which time slots were already occupied. If messages had been manually deleted from EC2 — or had failed and been removed — those deletions were never reflected locally. The scheduler treated the deleted slots as still occupied and pushed new proverbs further into the future than intended.
+
+### Root Cause
+
+`bulk_approve_broadcast_posts()` and `queue_broadcast_proverb()` both seeded `existing_queue` from the local `promo_messages.json` file. That file is a write-once mirror — Indaba pushes to it when queuing but never pulls from EC2 to reconcile deletions, failures, or manual removals. Local state could silently diverge from actual EC2 queue state.
+
+### Fix Applied
+
+**1. `services/distribution_service.py` — `fetch_ec2_queue()`**
+
+New function that calls `GET /queue` on EC2 Sender (which returns the full `queue.json` array), filters to `status == "queued"`, and returns the live list. Returns `None` on any failure (EC2 unreachable, timeout, etc.).
+
+**2. `routes/promo_broadcast_post.py` — `bulk_approve_broadcast_posts()`**
+
+`acc_queue` now seeds from `fetch_ec2_queue()` instead of local `promo_messages.json`. Falls back to local file if EC2 is unreachable. Response includes `"schedule_source": "ec2_live"` or `"local_fallback"` so divergence is visible.
+
+**3. `routes/promo_broadcast_post.py` — `queue_broadcast_proverb()`**
+
+Same fix for the single-proverb queue endpoint.
+
+### Invariant
+
+The scheduler now always reflects actual EC2 queue state when computing the next available slot. Manual deletions, failed-message cleanup, or any EC2-side changes are automatically accounted for at schedule time — no reconciliation step needed.
+
+### Key Learnings
+
+- `promo_messages.json` is a **write-only history log**, not a reliable queue mirror. Never use it as scheduling input.
+- The EC2 Sender's `GET /queue` endpoint (added in the original EC2 deployment) returns the complete live queue — use it as the authority.
+- The fallback to local is intentional: if EC2 is down, scheduling still works, but `schedule_source: "local_fallback"` in the response flags the degraded state.
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `services/distribution_service.py` | Added `fetch_ec2_queue()` — fetches live EC2 queue |
+| `routes/promo_broadcast_post.py` | `bulk_approve` and `queue_broadcast_proverb` now use live EC2 queue for scheduling |
+
+---
+
+## 2026-04-21 — S3 Image URL Expiry Fix (Proverb / WA broadcasts)
+
+### Problem
+
+All queued proverb broadcasts were failing on EC2 with:
+```
+failed to download image from URL — HTTP request failed with status: 403 Forbidden
+```
+
+### Root Cause
+
+When proverb messages are queued, their images are uploaded to S3 and a **pre-signed URL** is stored in the EC2 queue. AWS S3 pre-signed URLs have a hard 7-day maximum expiry when using IAM roles. Proverbs queued on Apr 9 and Apr 13 (8–12 days earlier) had expired URLs. GoWA received the expired URL, tried to download the image, and got 403.
+
+### Fix Applied
+
+**1. S3 bucket policy** — Set a permanent public read policy on the `images/*` prefix of the `indaba-media-fidel` bucket. Any object uploaded under that prefix is now publicly readable forever.
+
+**2. Code change** (`services/distribution_service.py`, `_upload_image_to_s3`) — Removed pre-signed URL generation. Now returns a permanent public URL:
+```python
+# Before (broke after 7 days)
+presigned_url = s3.generate_presigned_url('get_object', ..., ExpiresIn=604800)
+
+# After (permanent)
+public_url = f"https://{bucket}.s3.amazonaws.com/{key}"
+```
+
+**3. Immediate repair** — Re-uploaded all 20 stuck proverb images to S3 and updated the EC2 queue entries with fresh permanent URLs. 19/20 updated successfully; 1 was already absent from the EC2 queue (likely already processed).
+
+### Key Learnings
+
+- **Never use pre-signed S3 URLs for queued media.** Proverbs are queued days or weeks ahead — any expiry window shorter than the queue depth will cause silent breakage.
+- **The fix is permanent.** `images/*` in the S3 bucket is now publicly readable. All future proverb/broadcast images uploaded there will work forever.
+- **The bucket** (`indaba-media-fidel`) has all public access blocks disabled — public bucket policies are supported.
+- If the bucket ever needs to restrict public access again, the alternative is to store images on EC2 itself and serve from there (EC2 is always reachable by GoWA on the same host).
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `services/distribution_service.py` | `_upload_image_to_s3` — replaced pre-signed URL with permanent public URL |
+
+---
+
 ## 2026-04-19 — Discord Bot + EC2 Indaba Deployment
 
 ### What was built

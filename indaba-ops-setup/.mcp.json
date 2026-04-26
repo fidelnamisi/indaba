@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "indaba": {
+      "command": "uv",
+      "args": ["run", "--script", "/Users/fidelnamisi/Indaba/mcp/server.py"],
+      "env": {}
+    }
+  }
+}

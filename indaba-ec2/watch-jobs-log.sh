@@ -1,0 +1,2 @@
+#!/bin/bash
+cp ~/Indaba/ec2-key.pem /tmp/ec2-temp-key && chmod 600 /tmp/ec2-temp-key && PUB=$(ssh-keygen -y -f /tmp/ec2-temp-key) && aws ec2-instance-connect send-ssh-public-key --instance-id i-0b381c5c13988ca76 --instance-os-user ubuntu --ssh-public-key "$PUB" --region us-east-1 > /dev/null && ssh -i /tmp/ec2-temp-key -o StrictHostKeyChecking=no ubuntu@13.218.60.13 "tail -f /opt/indaba-jobs-webhook/logs/webhook.log"

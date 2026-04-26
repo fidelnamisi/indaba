@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.fidel.indaba</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-l</string>
+        <string>-c</string>
+        <string>cd /Users/fidelnamisi/Indaba &amp;&amp; nohup python3 app.py &gt; app_run.log 2&gt;&amp;1</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/fidelnamisi/Indaba/app_run.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/fidelnamisi/Indaba/app_run.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/fidelnamisi/Indaba</string>
+</dict>
+</plist>
