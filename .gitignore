@@ -9,3 +9,4 @@ notes/
 publishing/
 server.log
 *.log
+*.pem
