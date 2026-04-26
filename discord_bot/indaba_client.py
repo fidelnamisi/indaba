@@ -136,3 +136,55 @@ def flash_fiction_generate(params: dict) -> dict:
 
 def generate_asset(entry_id: str, asset_type: str) -> dict:
     return _post(f"/api/modules/{entry_id}/generate-asset", {"asset_type": asset_type})
+
+
+# ── Phase 1 additions ─────────────────────────────────────────────────────────
+
+def works_get(work_id: str) -> dict:
+    return _get(f"/api/works/{work_id}")
+
+
+def work_queue_module(work_id: str, module_id: str, cta_url: str = "") -> dict:
+    body = {}
+    if cta_url:
+        body["cta_url"] = cta_url
+    return _post(f"/api/works/{work_id}/modules/{module_id}/queue", body)
+
+
+def scheduler_run(dry_run: bool = False) -> dict:
+    return _post("/api/scheduler/run", {"dry_run": dry_run})
+
+
+def scheduler_preview() -> dict:
+    return _get("/api/scheduler/preview")
+
+
+def proverbs_create_batch(proverbs: list) -> dict:
+    return _post("/api/promo/proverbs/import_bulk", {"proverbs": proverbs})
+
+
+def flash_fiction_publish_queue(pipeline_entry_id: str, work_id: str, module_id: str) -> dict:
+    """Publish a pipeline entry to the website, then queue the work module with the live URL as CTA."""
+    publish_result = _post("/api/website/publish", {"entry_id": pipeline_entry_id})
+    chapter_url = (publish_result.get("website_publish_info") or {}).get("chapter_url", "")
+    queue_result = work_queue_module(work_id, module_id, cta_url=chapter_url)
+    return {
+        "published": publish_result,
+        "queued": queue_result,
+        "chapter_url": chapter_url,
+    }
+
+
+def audio_browse(work_id: str) -> dict:
+    return _get(f"/api/audio/browse/{work_id}")
+
+
+def audio_upload(work_id: str, filename: str, module_id: str, chapter_number=None) -> dict:
+    body: dict = {"work_id": work_id, "filename": filename, "module_id": module_id}
+    if chapter_number is not None:
+        body["chapter_number"] = chapter_number
+    return _post("/api/audio/upload", body)
+
+
+def crm_leads_summary() -> dict:
+    return _get("/api/promo/pipeline")

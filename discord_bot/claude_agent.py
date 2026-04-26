@@ -163,6 +163,132 @@ TOOLS = [
             "required": ["text"],
         },
     },
+    # ── Phase 1 tools ──────────────────────────────────────────────────────────
+    {
+        "name": "works_list_modules",
+        "description": "Get a specific work/series with all its serialised chunks/modules. Use this to see chapters of Love Back, OAO, etc.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "work_id": {"type": "string", "description": "The work UUID from works_list."},
+            },
+            "required": ["work_id"],
+        },
+    },
+    {
+        "name": "work_queue_module",
+        "description": "Queue a serialised chunk/module for WhatsApp delivery. Optionally include a website CTA URL.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "work_id":    {"type": "string", "description": "Work UUID"},
+                "module_id":  {"type": "string", "description": "Chunk UUID"},
+                "cta_url":    {"type": "string", "description": "Optional website URL to append as a CTA link."},
+            },
+            "required": ["work_id", "module_id"],
+        },
+    },
+    {
+        "name": "scheduler_run",
+        "description": "Execute the 14-day rolling content scheduler — assigns unqueued proverbs, novel serial chunks, and flash fiction to their canonical slots.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dry_run": {"type": "boolean", "description": "If true, preview without writing. Default: false."},
+            },
+        },
+    },
+    {
+        "name": "scheduler_preview",
+        "description": "Preview what the scheduler would queue over the next 14 days without making any changes.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "proverbs_create_batch",
+        "description": "Bulk-import a list of new proverbs into the proverb library.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "proverbs": {
+                    "type": "array",
+                    "description": "List of proverb objects. Each must have 'text'; 'origin' is optional.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text":   {"type": "string"},
+                            "origin": {"type": "string"},
+                        },
+                        "required": ["text"],
+                    },
+                },
+            },
+            "required": ["proverbs"],
+        },
+    },
+    {
+        "name": "flash_fiction_generate",
+        "description": "Generate a complete piece of AI flash fiction. Requires genre, trope, twist, setting fields, and word_count.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "genre":               {"type": "string", "enum": ["historical", "romance", "fantasy", "science_fiction", "thriller", "horror"]},
+                "trope":               {"type": "string", "description": "Trope key, e.g. 'chosen_one', 'dark_bargain', 'second_chance'"},
+                "twist":               {"type": "string", "enum": ["invert_outcome", "shift_victim", "reveal_cause", "reframe_genre", "compress_timeline", "relocate_monster", "collapse_archetype"]},
+                "setting_place":       {"type": "string", "description": "Specific place, e.g. 'Lagos, 1967'"},
+                "setting_era":         {"type": "string", "description": "Time period or era"},
+                "setting_atmosphere":  {"type": "string", "description": "Dominant atmosphere, e.g. 'rain-soaked dread'"},
+                "word_count":          {"type": "string", "enum": ["100_300", "300_500", "500_750", "750_1000"]},
+                "pov":                 {"type": "string", "enum": ["first_person", "third_person_limited", "unreliable_narrator"]},
+                "character":           {"type": "string", "description": "Optional: brief description of central character"},
+                "emotion":             {"type": "string", "enum": ["dread", "ache", "exhilaration", "unease", "tenderness", "shock"]},
+                "constraint":          {"type": "string", "description": "Optional: specific writing constraint"},
+            },
+            "required": ["genre", "trope", "twist", "setting_place", "setting_era", "setting_atmosphere", "word_count"],
+        },
+    },
+    {
+        "name": "flash_fiction_publish_queue",
+        "description": "Publish a pipeline entry to the website, then queue a work module for WhatsApp delivery with the website URL as a CTA. Use after flash fiction is ready in the pipeline.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pipeline_entry_id": {"type": "string", "description": "Pipeline entry ID to publish to the website"},
+                "work_id":           {"type": "string", "description": "Work UUID for the WA queue"},
+                "module_id":         {"type": "string", "description": "Module/chunk UUID to queue"},
+            },
+            "required": ["pipeline_entry_id", "work_id", "module_id"],
+        },
+    },
+    {
+        "name": "audio_browse",
+        "description": "List MP3 audio files available in the pCloud folder for a given work/series.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "work_id": {"type": "string", "description": "Series code or UUID, e.g. OAO, LB"},
+            },
+            "required": ["work_id"],
+        },
+    },
+    {
+        "name": "audio_upload",
+        "description": "Upload a local pCloud MP3 file to S3 and link it to a pipeline module. Returns a job_id to poll for progress.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "work_id":        {"type": "string", "description": "Series code, e.g. OAO"},
+                "filename":       {"type": "string", "description": "MP3 filename from audio_browse"},
+                "module_id":      {"type": "string", "description": "Pipeline entry ID to link the audio to"},
+                "chapter_number": {"type": "integer", "description": "Optional: override chapter number for S3 key"},
+            },
+            "required": ["work_id", "filename", "module_id"],
+        },
+    },
+    {
+        "name": "crm_leads_summary",
+        "description": "Get a summary of the CRM pipeline: all leads grouped by stage (lead, pitched, negotiating, closed, lost).",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
 ]
 
 
@@ -204,6 +330,35 @@ def _execute_tool(name: str, inputs: dict) -> str:
         elif name == "add_roadmap_idea":
             result = roadmap.add_idea(inputs["text"])
             return json.dumps({"ok": True, "status": result})
+        # ── Phase 1 tools ──────────────────────────────────────────────────────
+        elif name == "works_list_modules":
+            return json.dumps(api.works_get(inputs["work_id"]))
+        elif name == "work_queue_module":
+            return json.dumps(api.work_queue_module(
+                inputs["work_id"], inputs["module_id"],
+                cta_url=inputs.get("cta_url", "")
+            ))
+        elif name == "scheduler_run":
+            return json.dumps(api.scheduler_run(dry_run=inputs.get("dry_run", False)))
+        elif name == "scheduler_preview":
+            return json.dumps(api.scheduler_preview())
+        elif name == "proverbs_create_batch":
+            return json.dumps(api.proverbs_create_batch(inputs["proverbs"]))
+        elif name == "flash_fiction_generate":
+            return json.dumps(api.flash_fiction_generate(inputs))
+        elif name == "flash_fiction_publish_queue":
+            return json.dumps(api.flash_fiction_publish_queue(
+                inputs["pipeline_entry_id"], inputs["work_id"], inputs["module_id"]
+            ))
+        elif name == "audio_browse":
+            return json.dumps(api.audio_browse(inputs["work_id"]))
+        elif name == "audio_upload":
+            return json.dumps(api.audio_upload(
+                inputs["work_id"], inputs["filename"], inputs["module_id"],
+                chapter_number=inputs.get("chapter_number")
+            ))
+        elif name == "crm_leads_summary":
+            return json.dumps(api.crm_leads_summary())
         else:
             return json.dumps({"error": f"Unknown tool: {name}"})
     except Exception as e:
