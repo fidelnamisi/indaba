@@ -122,6 +122,10 @@ def promo_broadcast_generate(proverb_id: str) -> dict:
     return _post("/api/promo/broadcast_post/generate", {"proverb_id": proverb_id})
 
 
+def proverbs_generate_batch(limit: int = 10) -> dict:
+    return _post("/api/promo/broadcast_post/generate_batch", {"limit": limit})
+
+
 def promo_broadcast_queue(proverb_id: str, channel: str = "channel") -> dict:
     return _post(f"/api/promo/broadcast_post/{proverb_id}/queue", {"channel": channel})
 

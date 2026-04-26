@@ -289,6 +289,18 @@ TOOLS = [
         "description": "Get a summary of the CRM pipeline: all leads grouped by stage (lead, pitched, negotiating, closed, lost).",
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
+    # ── Phase 3 tools ──────────────────────────────────────────────────────────
+    {
+        "name": "proverbs_generate_batch",
+        "description": "Generate AI captions and images for the next N proverbs in the library that don't yet have a broadcast post. Use this to batch-process unfinished proverbs so they can be scheduled.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Number of proverbs to process (default 10, max 50)"},
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -359,6 +371,9 @@ def _execute_tool(name: str, inputs: dict) -> str:
             ))
         elif name == "crm_leads_summary":
             return json.dumps(api.crm_leads_summary())
+        # ── Phase 3 tools ──────────────────────────────────────────────────────
+        elif name == "proverbs_generate_batch":
+            return json.dumps(api.proverbs_generate_batch(inputs.get("limit", 10)))
         else:
             return json.dumps({"error": f"Unknown tool: {name}"})
     except Exception as e:

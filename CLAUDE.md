@@ -60,6 +60,18 @@ Do not skip this step.
 | `lead_measures.json` | Weekly lead measure tracking |
 | `earnings.json` | Monthly Patreon earnings |
 
+## Data Sync Architecture
+
+Local and EC2 are **separate data stores**. Use `./scripts/sync_to_ec2.sh` to push mutable files.
+
+| File | Authoritative source | Notes |
+|------|---------------------|-------|
+| `promo_leads.json` | **Local** | Edit in dashboard, push to EC2 after changes |
+| `promo_contacts.json` | **Local** | Edit in dashboard, push to EC2 after changes |
+| `promo_proverbs.json` | **EC2** | Bot adds proverbs on EC2; pull from EC2 if needed |
+| `promo_messages.json` | **EC2** | Outbox lives on EC2; do not overwrite |
+| `content_pipeline.json` | **Local** | Chapter pipeline is local-only |
+
 ## Development Rules
 
 - Read every file before modifying it

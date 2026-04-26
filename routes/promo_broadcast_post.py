@@ -79,6 +79,35 @@ def generate_broadcast_post():
         return jsonify({"error": str(e)}), 502
 
 
+@bp.route('/api/promo/broadcast_post/generate_batch', methods=['POST'])
+def generate_batch_broadcast_posts():
+    """Generate AI captions and images for the next N proverbs that have no composite_path."""
+    if not PIL_AVAILABLE:
+        return jsonify({"error": "Pillow not installed."}), 503
+
+    data  = request.get_json() or {}
+    limit = min(int(data.get('limit', 10)), 50)
+
+    proverbs_data = read_json(PROMO_PROVERBS_FILE) or {"proverbs": []}
+    candidates    = [p for p in proverbs_data["proverbs"] if not p.get('composite_path')]
+    if not candidates:
+        return jsonify({"processed": 0, "failed": [], "message": "All proverbs already have composite images."})
+
+    from capabilities.create.generator import _VARIETY_TOKENS
+    processed = 0
+    failed    = []
+    for i, proverb in enumerate(candidates[:limit]):
+        try:
+            variety_hint = _VARIETY_TOKENS[i % len(_VARIETY_TOKENS)]
+            generate_single_post(proverb, proverbs_data, variety_hint=variety_hint)
+            processed += 1
+        except Exception as e:
+            failed.append({"proverb_id": proverb["id"], "error": str(e)})
+
+    write_json(PROMO_PROVERBS_FILE, proverbs_data)
+    return jsonify({"processed": processed, "failed": failed})
+
+
 @bp.route('/api/promo/broadcast_post/bulk_generate', methods=['POST'])
 def bulk_generate_broadcast_posts():
     data  = request.get_json() or {}

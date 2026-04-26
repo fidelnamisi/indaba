@@ -9,7 +9,7 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request
 from utils.json_store import read_json, write_json
 from utils.constants import (
-    PROMO_MESSAGES_FILE, PROMO_CONTACTS_FILE,
+    PROMO_MESSAGES_FILE, PROMO_CONTACTS_FILE, PROMO_LEADS_FILE,
     PROMO_SETTINGS_FILE, DEFAULT_PROMO_SETTINGS,
     MESSAGE_MAKER_SYSTEM_PROMPT
 )
@@ -278,3 +278,45 @@ def preview_message(msg_id):
         return jsonify(r.json())
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 502
+
+
+@bp.route('/api/promo/messages/inbound', methods=['POST'])
+def receive_inbound_message():
+    """Receive an incoming GoWA message and append it to the matching lead's communication_log."""
+    data      = request.get_json() or {}
+    sender    = data.get('from', '').strip()
+    body      = data.get('body', '').strip()
+    timestamp = data.get('timestamp', datetime.utcnow().isoformat() + "Z")
+
+    if not sender or not body:
+        return jsonify({"ok": False, "error": "from and body are required"}), 400
+
+    contacts_data = read_json(PROMO_CONTACTS_FILE) or {"contacts": []}
+    contact = next((c for c in contacts_data.get("contacts", []) if c.get('phone') == sender), None)
+
+    leads_data = read_json(PROMO_LEADS_FILE) or {"leads": []}
+    lead = None
+    if contact:
+        lead = next(
+            (l for l in leads_data.get("leads", [])
+             if l.get('contact_id') == contact['id']
+             and l.get('stage') not in ('closed', 'lost')),
+            None
+        )
+
+    log_entry = {
+        "direction": "inbound",
+        "channel":   "whatsapp",
+        "body":      body,
+        "timestamp": timestamp,
+    }
+
+    if lead:
+        lead.setdefault('communication_log', []).append(log_entry)
+        lead['updated_at'] = datetime.utcnow().isoformat() + "Z"
+        write_json(PROMO_LEADS_FILE, leads_data)
+        return jsonify({"ok": True, "lead_id": lead['id'], "contact_found": True})
+
+    # Unknown sender — log without a lead
+    return jsonify({"ok": True, "lead_id": None, "contact_found": False,
+                    "note": f"No active lead found for {sender}"})
