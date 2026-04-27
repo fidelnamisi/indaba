@@ -2,6 +2,33 @@
 
 ---
 
+## 2026-04-27 — Discord Bot Live + Phase 6 Design
+
+### What Changed
+
+**Discord bot is now live on EC2.** Tokens were configured, bot connects to Discord and responds in `#indaba-ops`.
+
+**Fixes applied this session:**
+- SAST (GMT+2) timezone in `roadmap.py` — `!idea` timestamps now show local time
+- `discord_bot/indaba-discord.service` added to `.gitignore` — tokens can never be accidentally committed
+- `!preview`, `!generate [id]`, `!queue <id>` commands added (then superseded — see below)
+
+**Decision: Scrap explicit commands for content operations.**
+
+Fidel wants natural language all the way. Explicit commands like `!generate` and `!queue <id>` are confusing (e.g. `!generate` sounds generic but was proverb-only). The next session will replace them with a conversational agent that previews write operations before executing them.
+
+**Next session goal:** See `PHASE_6_HANDOFF.md` for full spec.
+
+### EC2 Deployment
+
+Bot is live. To pull updates after code changes:
+```bash
+ssh -i ~/Indaba/ec2-key.pem ubuntu@13.218.60.13
+cd /opt/indaba-discord && git pull && sudo systemctl restart indaba-discord
+```
+
+---
+
 ## 2026-04-21 — EC2 Queue: Reschedule + Bulk Delete
 
 ### What Changed
