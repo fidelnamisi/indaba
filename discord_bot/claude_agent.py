@@ -304,6 +304,31 @@ TOOLS = [
 ]
 
 
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _content_block_to_dict(block) -> dict:
+    """Convert SDK content block to a plain dict for history storage."""
+    if hasattr(block, 'text'):
+        return {"type": "text", "text": block.text}
+    elif hasattr(block, 'type') and block.type == "tool_use":
+        return {
+            "type": "tool_use",
+            "id": block.id,
+            "name": block.name,
+            "input": block.input,
+        }
+    elif isinstance(block, dict):
+        return block
+    return {"type": "unknown"}
+
+
+def _content_to_dict(content) -> list | dict:
+    """Convert response.content (list of SDK blocks) to plain dicts."""
+    if isinstance(content, list):
+        return [_content_block_to_dict(b) for b in content]
+    return content
+
+
 # ── Tool executor ─────────────────────────────────────────────────────────────
 
 def _execute_tool(name: str, inputs: dict) -> str:
@@ -451,12 +476,12 @@ def run_agent(user_message: str, history: list = None, progress_callback=None) -
         )
 
         if response.stop_reason == "end_turn":
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "assistant", "content": _content_to_dict(response.content)})
             text = next((b.text for b in response.content if hasattr(b, "text")), "Done.")
             return text, messages[-30:]
 
         if response.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "assistant", "content": _content_to_dict(response.content)})
             tool_results = []
 
             for block in response.content:
