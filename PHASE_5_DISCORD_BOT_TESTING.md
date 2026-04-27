@@ -25,7 +25,7 @@ This session uses **Haiku (lower model)** running on Claude.ai/code (web) to:
 2. Sign in with your Anthropic account
 3. Click **"New session"** (or **"+"** at top)
 4. **Session name:** Type exactly: `indaba-discord-testing-haiku`
-5. **Working directory:** `/Users/fidelnamisi/Indaba`
+5. **Repository:** GitHub — `fidelnamisi/indaba`
 6. **Permissions:** Toggle to **OFF** (accept all permissions disabled)
 7. **Model:** Select **Haiku 4.5**
 8. Click **Create**
@@ -102,9 +102,11 @@ Report format:
 
 Once you've documented all workflows:
 
-1. Save your test results to `/Users/fidelnamisi/Indaba/PHASE_5_DISCORD_BOT_TEST_RESULTS.md`
-2. Close the session
-3. Return to this CLI session and I'll update the handoff docs
+1. Create file: `PHASE_5_DISCORD_BOT_TEST_RESULTS.md` in the GitHub repo
+2. Commit: `git add PHASE_5_DISCORD_BOT_TEST_RESULTS.md && git commit -m "Phase 5 testing results: Discord bot workflows tested"`
+3. Push: `git push origin main`
+4. Close the session
+5. Results are now saved to GitHub (single source of truth)
 
 ---
 

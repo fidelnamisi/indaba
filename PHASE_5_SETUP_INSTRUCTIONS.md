@@ -2,6 +2,7 @@
 
 **Objective:** Test Discord bot end-to-end functionality using Haiku model on claude.ai/code  
 **Date:** 2026-04-27  
+**Source of Truth:** GitHub repo (fidelnamisi/indaba) — no local filesystem  
 **Next Session Focus:** Testing (Haiku), then debugging (Sonnet)
 
 ---
@@ -15,7 +16,7 @@
 3. Click **"New session"** (or click **"+"**)
 4. Fill in the form:
    - **Session name:** `indaba-discord-testing-haiku`
-   - **Working directory:** `/Users/fidelnamisi/Indaba`
+   - **Repository:** GitHub — `fidelnamisi/indaba`
    - **Model:** Haiku 4.5
    - **Permissions:** Toggle to **OFF** (do NOT accept all permissions automatically)
 5. Click **Create**
@@ -24,7 +25,7 @@
 
 ## 📋 STEP 2: Copy & Paste the Initialization Prompt
 
-Once the session opens, **copy the entire text block below** and paste it into the chat:
+Once the session opens and you're in the GitHub repo, **copy the entire text block below** and paste it into the chat:
 
 ---
 
@@ -48,18 +49,23 @@ Once the session opens, **copy the entire text block below** and paste it into t
 
 ## Your First Task: Understand the Setup
 
-Read these files to understand the current Discord bot state:
+Read these files from the GitHub repo to understand the current Discord bot state:
 
-1. **Memory file:** `/Users/fidelnamisi/.claude/projects/-Users-fidelnamisi-Indaba/memory/project_discord_bot.md`
-   - Current status: bot deployed on EC2, awaiting activation
-   - Architecture: EC2 `/opt/indaba-discord` calls Indaba API at `localhost:5050`
+1. **This repo:** fidelnamisi/indaba (GitHub)
+   - Read: `PHASE_5_DISCORD_BOT_TESTING.md` — what to test, how to structure findings
+   - Read: `PHASE_4_HANDOFF.md` — infrastructure status (EC2 live, data in sync)
 
-2. **Phase 5 plan:** `/Users/fidelnamisi/Indaba/PHASE_5_DISCORD_BOT_TESTING.md`
-   - What to test, how to structure findings
-
-3. **Indaba-ops repo:** `/Users/fidelnamisi/Indaba-ops/indaba-bot/`
+2. **Discord bot code:** Separate GitHub repo — `fidelnamisi/indaba-ops`
+   - Directory: `indaba-bot/`
    - Explore the Discord bot code structure
    - Find all command handlers (search for `@bot.command`, `@bot.event`, etc.)
+   - Look for: command definitions, event handlers, API calls to Indaba
+   - Check: environment variables needed, error handling
+
+3. **Discord bot status:**
+   - Current: Deployed on EC2 at `/opt/indaba-discord`
+   - Architecture: Bot calls Indaba API at `https://indaba.realmsandroads.com` (EC2 production URL)
+   - Awaiting: `DISCORD_BOT_TOKEN` env var to activate
 
 ---
 
@@ -85,7 +91,7 @@ For each Discord command found, document:
 
 ## Report Format
 
-Save your results as `/Users/fidelnamisi/Indaba/PHASE_5_DISCORD_BOT_TEST_RESULTS.md`:
+Create a new file in the GitHub repo: `PHASE_5_DISCORD_BOT_TEST_RESULTS.md`:
 
 ```markdown
 # Phase 5 Discord Bot Testing Results
@@ -112,21 +118,14 @@ Save your results as `/Users/fidelnamisi/Indaba/PHASE_5_DISCORD_BOT_TEST_RESULTS
 
 ---
 
-## Key Files to Explore
-
-- Discord bot code: `/Users/fidelnamisi/Indaba-ops/indaba-bot/` (if separate repo)
-- Or in main Indaba repo: Search for `discord` in repo structure
-- Look for: command definitions, event handlers, API calls
-- Check: environment variables needed, API endpoints called, error handling
-
----
-
 ## When Complete
 
-1. Save your test results file: `/Users/fidelnamisi/Indaba/PHASE_5_DISCORD_BOT_TEST_RESULTS.md`
+1. Create the test results file: `PHASE_5_DISCORD_BOT_TEST_RESULTS.md`
 2. Note any blocking issues in the report
-3. Close the session (your work is saved to the results file)
-4. The next session (Sonnet) will read your report and fix the issues
+3. **Commit to GitHub:** `git add PHASE_5_DISCORD_BOT_TEST_RESULTS.md && git commit -m "Phase 5 testing results: Discord bot workflows tested and documented"`
+4. **Push to GitHub:** `git push origin main`
+5. Close the session
+6. The next session (Sonnet) will read your results from GitHub and fix the issues
 
 ---
 

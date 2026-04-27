@@ -2,6 +2,7 @@
 
 **Current Date:** 2026-04-27  
 **Current Phase:** Phase 5 — Discord Bot Testing via claude.ai/code (Haiku model)  
+**Source of Truth:** GitHub repo (fidelnamisi/indaba) — NO local filesystem access  
 **Next Objective:** Test Discord bot end-to-end, document passing/failing workflows
 
 ---
@@ -13,16 +14,20 @@
 1. **Open:** https://claude.ai/code
 2. **Create new session:**
    - Name: `indaba-discord-testing-haiku`
-   - Directory: `/Users/fidelnamisi/Indaba`
+   - Repository: GitHub — `fidelnamisi/indaba`
    - Model: **Haiku 4.5**
 3. **Copy & paste** the entire initialization prompt from: **`PHASE_5_SETUP_INSTRUCTIONS.md`**
 4. **Let it test** Discord bot workflows, document results
-5. **Save results** to: `/Users/fidelnamisi/Indaba/PHASE_5_DISCORD_BOT_TEST_RESULTS.md`
+5. **Commit & push** results to GitHub:
+   - Create file: `PHASE_5_DISCORD_BOT_TEST_RESULTS.md`
+   - Commit: `git add ... && git commit -m "Phase 5 testing results..."`
+   - Push: `git push origin main`
 
 ### Session Continuity
 
 - **Session name:** `indaba-discord-testing-haiku` (can resume later)
-- **Results file:** `/Users/fidelnamisi/Indaba/PHASE_5_DISCORD_BOT_TEST_RESULTS.md`
+- **Results file:** GitHub repo `PHASE_5_DISCORD_BOT_TEST_RESULTS.md` (committed & pushed)
+- **Source of truth:** All work saved to GitHub, no local filesystem
 
 ---
 
@@ -79,22 +84,14 @@
 
 ## 🚀 How to Start Next Session
 
-**Copy this command and run it to get started:**
-
-```bash
-open "https://claude.ai/code"
-# Then follow steps in PHASE_5_SETUP_INSTRUCTIONS.md
-```
-
-**Or manually:**
 1. Go to https://claude.ai/code
 2. Click "New session"
-3. Name: `indaba-discord-testing-haiku`
-4. Directory: `/Users/fidelnamisi/Indaba`
-5. Model: **Haiku 4.5**
-6. Permissions: OFF
-7. Create
-8. Paste prompt from `PHASE_5_SETUP_INSTRUCTIONS.md`
+3. **Session name:** `indaba-discord-testing-haiku`
+4. **Repository:** GitHub — `fidelnamisi/indaba`
+5. **Model:** **Haiku 4.5**
+6. **Permissions:** OFF (do NOT auto-accept)
+7. Click **Create**
+8. Paste prompt from `PHASE_5_COPY_PASTE_PROMPT.txt`
 
 ---
 
@@ -121,11 +118,11 @@ open "https://claude.ai/code"
 
 | Item | Location |
 |------|----------|
-| Setup instructions | `PHASE_5_SETUP_INSTRUCTIONS.md` |
-| Testing plan | `PHASE_5_DISCORD_BOT_TESTING.md` |
-| Discord bot code | `/Users/fidelnamisi/Indaba-ops/indaba-bot/` |
-| Discord bot status | Memory: `project_discord_bot.md` |
-| Infrastructure status | `PHASE_4_HANDOFF.md` |
-| Test results (output) | `/Users/fidelnamisi/Indaba/PHASE_5_DISCORD_BOT_TEST_RESULTS.md` |
+| Setup instructions | GitHub repo: `PHASE_5_SETUP_INSTRUCTIONS.md` |
+| Copy-paste prompt | GitHub repo: `PHASE_5_COPY_PASTE_PROMPT.txt` |
+| Testing plan | GitHub repo: `PHASE_5_DISCORD_BOT_TESTING.md` |
+| Discord bot code | GitHub repo: `fidelnamisi/indaba-ops` → `indaba-bot/` |
+| Infrastructure status | GitHub repo: `PHASE_4_HANDOFF.md` |
+| Test results (output) | GitHub repo: `PHASE_5_DISCORD_BOT_TEST_RESULTS.md` (to be created) |
 
 **You're ready. Start the next session and paste the prompt!**
