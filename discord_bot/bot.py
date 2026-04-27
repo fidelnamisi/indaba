@@ -277,6 +277,40 @@ async def _do_status(reply):
         await reply(f"EC2 status check failed: {e}")
 
 
+async def _do_preview(reply):
+    try:
+        data = await asyncio.to_thread(api.promo_preview_prompt)
+        if "error" in data:
+            await reply(f"Preview failed: {data['error']}")
+            return
+        proverb_id = data.get("proverb_id", "?")
+        text_out = (
+            f"**Proverb preview** — `{proverb_id}`\n\n"
+            f"**Proverb:**\n{data.get('proverb_text', '?')}\n\n"
+            f"**Caption (WA post):**\n{data.get('meaning', '?')}\n\n"
+            f"**Image prompt:**\n_{data.get('image_prompt', '?')}_\n\n"
+            f"Happy with it? → `!generate {proverb_id}`\n"
+            f"Want a different one? → `!preview` again"
+        )
+        await reply(text_out)
+    except Exception as e:
+        await reply(f"Preview failed: {e}")
+
+
+async def _do_generate_and_queue(reply, proverb_id: str):
+    if not proverb_id:
+        await reply("Provide a proverb ID from `!preview`. E.g. `!generate abc-123`")
+        return
+    await reply(f"Generating image for `{proverb_id}`… (takes ~30s)")
+    try:
+        await asyncio.to_thread(api.promo_broadcast_generate, proverb_id)
+        queue_data = await asyncio.to_thread(api.promo_broadcast_queue, proverb_id)
+        scheduled_at = queue_data.get("scheduled_at", "?")
+        await reply(f"Done! Queued for **{scheduled_at}**")
+    except Exception as e:
+        await reply(f"Generate/queue failed: {e}")
+
+
 async def _do_idea(reply, text: str):
     if not text:
         await reply("What's the idea? `!idea <your idea here>`")
@@ -302,6 +336,8 @@ async def _do_help(reply):
         `!sync <work_code>`       Compare pipeline vs live website
         `!works`                  List all works / book series
         `!status`                 EC2 sender health
+        `!preview`                Preview next proverb caption (no image yet)
+        `!generate <id>`          Create image + schedule (use ID from !preview)
         `!idea <text>`            Add idea to ROADMAP.md (pushed to GitHub)
         `!help`                   This message
 
@@ -373,6 +409,18 @@ async def cmd_works(ctx):
 async def cmd_status(ctx):
     if not _in_ops_channel(ctx): return
     await _do_status(lambda t: _reply(ctx, t))
+
+
+@bot.command(name="preview")
+async def cmd_preview(ctx):
+    if not _in_ops_channel(ctx): return
+    await _do_preview(lambda t: _reply(ctx, t))
+
+
+@bot.command(name="generate")
+async def cmd_generate(ctx, proverb_id: str = ""):
+    if not _in_ops_channel(ctx): return
+    await _do_generate_and_queue(lambda t: _reply(ctx, t), proverb_id)
 
 
 @bot.command(name="idea")

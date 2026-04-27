@@ -118,6 +118,10 @@ def promo_broadcast_list() -> list:
     return _get("/api/promo/proverbs")
 
 
+def promo_preview_prompt() -> dict:
+    return _post("/api/promo/broadcast_post/preview-prompt", {})
+
+
 def promo_broadcast_generate(proverb_id: str) -> dict:
     return _post("/api/promo/broadcast_post/generate", {"proverb_id": proverb_id})
 

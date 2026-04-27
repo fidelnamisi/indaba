@@ -113,6 +113,11 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "promo_preview_prompt",
+        "description": "Preview the next unprocessed proverb: returns the proverb text, AI-generated WhatsApp caption (meaning), and image prompt. Does NOT generate the image or queue anything. Use this so Fidel can review before committing.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "promo_broadcast_generate",
         "description": "Generate an AI-written broadcast post (caption + image prompt) for a proverb. Must be called before queuing.",
         "input_schema": {
@@ -331,6 +336,8 @@ def _execute_tool(name: str, inputs: dict) -> str:
             return json.dumps(api.ec2_sender_health())
         elif name == "promo_broadcast_list":
             return json.dumps(api.promo_broadcast_list())
+        elif name == "promo_preview_prompt":
+            return json.dumps(api.promo_preview_prompt())
         elif name == "promo_broadcast_generate":
             return json.dumps(api.promo_broadcast_generate(inputs["proverb_id"]))
         elif name == "promo_broadcast_queue":
