@@ -3,7 +3,9 @@ ROADMAP.md idea capture — appends ideas with timestamps, then git-commits and 
 """
 import os
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+SAST = timezone(timedelta(hours=2))
 from config import ROADMAP_FILE, REPO_DIR, GITHUB_TOKEN
 
 
@@ -12,7 +14,7 @@ def add_idea(text: str) -> str:
     Append an idea to ROADMAP.md and push to GitHub.
     Returns a status string for Discord display.
     """
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    timestamp = datetime.now(SAST).strftime("%Y-%m-%d %H:%M SAST")
     entry = f"\n- **{timestamp}** — {text.strip()}\n"
 
     # Ensure ROADMAP.md exists
