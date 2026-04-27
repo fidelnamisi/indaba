@@ -708,19 +708,15 @@ def generate_chunk_image(work_id, module_id):
         ], max_tokens=150).strip()
 
         # Step 2: Call Imagen 3
-        from google.oauth2 import service_account as _sa
-        from google.auth.transport.requests import Request as _GReq
+        from capabilities.create.generator import _get_vertex_token
 
-        creds = _sa.Credentials.from_service_account_file(
-            sa_path, scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
-        creds.refresh(_GReq())
+        token = _get_vertex_token(sa_path)
 
         img_resp = _req.post(
             "https://us-central1-aiplatform.googleapis.com/v1/projects/"
             "gen-lang-client-0717388888/locations/us-central1/publishers/google/"
             "models/imagen-3.0-generate-001:predict",
-            headers={"Authorization": f"Bearer {creds.token}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json={
                 "instances":  [{"prompt": image_prompt + ", no text overlay, cinematic composition"}],
                 "parameters": {"sampleCount": 1, "aspectRatio": "16:9", "personGeneration": "allow_all"},
@@ -1254,13 +1250,9 @@ def bulk_generate_header_prompts(work_id):
             return jsonify({"error": "GOOGLE_SA_KEY not set — required for reference image processing"}), 503
         try:
             import requests as _req
-            from google.oauth2 import service_account as _sa
-            from google.auth.transport.requests import Request as _Req
+            from capabilities.create.generator import _get_vertex_token
 
-            _creds = _sa.Credentials.from_service_account_file(
-                sa_path, scopes=["https://www.googleapis.com/auth/cloud-platform"]
-            )
-            _creds.refresh(_Req())
+            _token = _get_vertex_token(sa_path)
 
             gemini_url = (
                 "https://us-central1-aiplatform.googleapis.com/v1/projects/"
@@ -1282,7 +1274,7 @@ def bulk_generate_header_prompts(work_id):
             }
             resp = _req.post(
                 gemini_url,
-                headers={"Authorization": f"Bearer {_creds.token}", "Content-Type": "application/json"},
+                headers={"Authorization": f"Bearer {_token}", "Content-Type": "application/json"},
                 json=vision_body,
                 timeout=30,
             )

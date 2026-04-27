@@ -256,13 +256,9 @@ def generate_module_header_image(module_id):
         return jsonify({"error": "GOOGLE_SA_KEY not set or file not found."}), 503
 
     try:
-        from google.oauth2 import service_account as _sa
-        from google.auth.transport.requests import Request as _GReq
+        from capabilities.create.generator import _get_vertex_token
 
-        creds = _sa.Credentials.from_service_account_file(
-            sa_path, scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
-        creds.refresh(_GReq())
+        token = _get_vertex_token(sa_path)
 
         # Use the image prompt as-is — do not append demographic/style suffixes
         # that could contradict the prompt content and trigger safety filters.
@@ -272,7 +268,7 @@ def generate_module_header_image(module_id):
             "https://us-central1-aiplatform.googleapis.com/v1/projects/"
             "gen-lang-client-0717388888/locations/us-central1/publishers/google/"
             "models/imagen-3.0-generate-001:predict",
-            headers={"Authorization": f"Bearer {creds.token}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json={"instances": [{"prompt": full_prompt}], "parameters": {"sampleCount": 1, "aspectRatio": "16:9", "personGeneration": "allow_all"}},
             timeout=90,
         )
