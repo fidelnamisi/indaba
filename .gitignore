@@ -10,3 +10,4 @@ publishing/
 server.log
 *.log
 *.pem
+discord_bot/indaba-discord.service
