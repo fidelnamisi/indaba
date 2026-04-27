@@ -17,6 +17,46 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
+
+def _get_vertex_token(sa_path):
+    """Exchange a service-account key file for a Google OAuth2 access token.
+    Uses only `requests` + `cryptography` — no google-auth package required."""
+    import json, time, base64
+    import requests as _req
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+    with open(sa_path) as f:
+        sa = json.load(f)
+
+    def _b64url(data):
+        if isinstance(data, dict):
+            data = json.dumps(data, separators=(',', ':')).encode()
+        return base64.urlsafe_b64encode(data).rstrip(b'=').decode()
+
+    now = int(time.time())
+    header  = {"alg": "RS256", "typ": "JWT"}
+    payload = {
+        "iss":   sa["client_email"],
+        "sub":   sa["client_email"],
+        "aud":   "https://oauth2.googleapis.com/token",
+        "scope": "https://www.googleapis.com/auth/cloud-platform",
+        "iat":   now,
+        "exp":   now + 3600,
+    }
+    signing_input = f"{_b64url(header)}.{_b64url(payload)}".encode()
+    private_key   = serialization.load_pem_private_key(sa["private_key"].encode(), password=None)
+    sig           = private_key.sign(signing_input, _pad.PKCS1v15(), hashes.SHA256())
+    jwt_token     = f"{signing_input.decode()}.{_b64url(sig)}"
+
+    resp = _req.post(
+        "https://oauth2.googleapis.com/token",
+        data={"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": jwt_token},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
 # ── Proverb post system prompts ───────────────────────────────────────────────
 
 MEANING_SYSTEM = """You write proverb interpretations for a WhatsApp channel called Wisdom & Love Stories.
@@ -266,16 +306,12 @@ def generate_image_and_composite(proverb, meaning, img_prompt):
     """
     import requests as _req
     import base64 as _b64
-    from google.oauth2 import service_account as _sa
-    from google.auth.transport.requests import Request as _Req
 
     sa_path = os.environ.get('GOOGLE_SA_KEY', '')
     if not sa_path or not os.path.exists(sa_path):
         raise ValueError("GOOGLE_SA_KEY not set or file not found.")
 
-    _creds = _sa.Credentials.from_service_account_file(
-        sa_path, scopes=["https://www.googleapis.com/auth/cloud-platform"])
-    _creds.refresh(_Req())
+    _token = _get_vertex_token(sa_path)
 
     full_prompt = (
         img_prompt
@@ -290,7 +326,7 @@ def generate_image_and_composite(proverb, meaning, img_prompt):
         "https://us-central1-aiplatform.googleapis.com/v1/projects/"
         "gen-lang-client-0717388888/locations/us-central1/"
         "publishers/google/models/imagen-3.0-generate-001:predict",
-        headers={"Authorization": f"Bearer {_creds.token}",
+        headers={"Authorization": f"Bearer {_token}",
                  "Content-Type": "application/json"},
         json={"instances": [{"prompt": full_prompt}],
               "parameters": {"sampleCount": 1, "aspectRatio": "9:16",
@@ -354,8 +390,6 @@ def generate_single_post(proverb, proverbs_data, variety_hint=None):
     """
     import requests as _req
     import base64 as _b64
-    from google.oauth2 import service_account as _sa
-    from google.auth.transport.requests import Request as _Req
 
     # Step 1: Generate meaning
     meaning_raw = call_ai("wa_post_maker", [
@@ -385,9 +419,7 @@ def generate_single_post(proverb, proverbs_data, variety_hint=None):
     if not sa_path or not os.path.exists(sa_path):
         raise ValueError("GOOGLE_SA_KEY not set or file not found.")
 
-    _creds = _sa.Credentials.from_service_account_file(
-        sa_path, scopes=["https://www.googleapis.com/auth/cloud-platform"])
-    _creds.refresh(_Req())
+    _token = _get_vertex_token(sa_path)
 
     # Let the AI-generated prompt lead. Append only technical requirements
     # and a hard racial-representation constraint that Imagen cannot override.
@@ -404,7 +436,7 @@ def generate_single_post(proverb, proverbs_data, variety_hint=None):
         "https://us-central1-aiplatform.googleapis.com/v1/projects/"
         "gen-lang-client-0717388888/locations/us-central1/"
         "publishers/google/models/imagen-3.0-generate-001:predict",
-        headers={"Authorization": f"Bearer {_creds.token}",
+        headers={"Authorization": f"Bearer {_token}",
                  "Content-Type": "application/json"},
         json={"instances": [{"prompt": full_prompt}],
               "parameters": {"sampleCount": 1, "aspectRatio": "9:16",

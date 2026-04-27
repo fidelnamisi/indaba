@@ -12,7 +12,7 @@ from services.distribution_service import push_to_outbox, fetch_ec2_queue
 from services.scheduler import auto_schedule
 
 try:
-    from capabilities.create.generator import composite_proverb_image, generate_single_post
+    from capabilities.create.generator import composite_proverb_image, generate_single_post, _get_vertex_token
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
@@ -358,8 +358,6 @@ def delete_broadcast_post(proverb_id):
 def regen_broadcast_post_image(proverb_id):
     import requests as _req
     import base64 as _b64
-    from google.oauth2 import service_account as _sa
-    from google.auth.transport.requests import Request as _Req
 
     proverbs_data = read_json(PROMO_PROVERBS_FILE) or {"proverbs": []}
     proverb = next((p for p in proverbs_data["proverbs"] if p['id'] == proverb_id), None)
@@ -373,10 +371,7 @@ def regen_broadcast_post_image(proverb_id):
         return jsonify({"error": "GOOGLE_SA_KEY not set."}), 503
 
     try:
-        _creds = _sa.Credentials.from_service_account_file(
-            sa_path, scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
-        _creds.refresh(_Req())
+        _token = _get_vertex_token(sa_path)
 
         settings = read_json(PROMO_SETTINGS_FILE) or {}
         full_prompt = (
@@ -391,7 +386,7 @@ def regen_broadcast_post_image(proverb_id):
             "https://us-central1-aiplatform.googleapis.com/v1/projects/"
             "gen-lang-client-0717388888/locations/us-central1/publishers/google/"
             "models/imagen-3.0-generate-001:predict",
-            headers={"Authorization": f"Bearer {_creds.token}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {_token}", "Content-Type": "application/json"},
             json={"instances": [{"prompt": full_prompt}], "parameters": {"sampleCount": 1, "aspectRatio": "9:16", "personGeneration": "allow_all"}},
             timeout=90,
         )
