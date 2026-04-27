@@ -17,6 +17,10 @@ jobs:
             git pull origin main
             source venv/bin/activate
             pip install -r requirements.txt -q
+            sudo pkill -9 -f "python.*app.py" || true
+            sudo lsof -i :5050 -S -t | xargs -r kill -9 || true
+            sudo lsof -i :5051 -S -t | xargs -r kill -9 || true
+            sleep 2
             sudo systemctl restart indaba-app
             sleep 5
             sudo systemctl is-active indaba-app
