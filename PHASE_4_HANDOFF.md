@@ -78,15 +78,30 @@ ssh -i ~/Indaba/ec2-key.pem ubuntu@13.218.60.13 \
 
 ---
 
-## What's Next (Phase 4)
+## Phase 4 Status (Updated 2026-04-27)
 
-**Before feature work begins:** Run a full end-to-end comparison between
-`localhost:5050` and `https://indaba.realmsandroads.com` to surface all defects in
-the EC2 version. Known issue already identified: People > Contacts is empty on EC2
-(data sync may be incomplete or a route is broken).
+**✅ Data Sync Complete:** All 20 missing/truncated files copied from localhost to EC2.
+Hub summary pipeline counts now match (62 producing, 6 promoting, 6 publishing).
 
-See `PHASE_4_TEST_INSTRUCTIONS.md` for the full testing brief.
+**⚠️ Pending Issues (2):**
+1. **Messages Queue Discrepancy:** EC2 shows 14 queued vs localhost 22 — investigation needed
+2. **Port Race Condition:** GitHub Actions deploy doesn't kill old process, causing port 5051 binding
 
-After testing is complete and defects are fixed, `localhost:5050` can be retired.
-Future coding sessions should use `claude.ai/code` — pushes to `main` auto-deploy
-within ~60 seconds, no SSH needed.
+**👉 See `PHASE_4_DATA_SYNC_HANDOFF.md` for detailed issue descriptions and resolution steps.**
+
+After next session resolves both issues:
+- EC2 and localhost will be in full parity
+- `localhost:5050` can be retired
+- Future coding sessions should use `claude.ai/code` (auto-deploy within ~60 seconds)
+
+---
+
+## What's Next (Phase 4 Final Steps)
+
+**Next Session:**
+1. Diagnose messages queue discrepancy (check migrate.py, sync logic)
+2. Harden GitHub Actions deploy script to kill old processes before restart
+3. Verify both issues resolved with final validation test
+4. Mark Phase 4 complete
+
+See `PHASE_4_DATA_SYNC_HANDOFF.md` for copy-paste instructions.
