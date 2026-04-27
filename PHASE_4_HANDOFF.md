@@ -78,30 +78,43 @@ ssh -i ~/Indaba/ec2-key.pem ubuntu@13.218.60.13 \
 
 ---
 
-## Phase 4 Status (Updated 2026-04-27)
+## Phase 4 Status — COMPLETE ✅ (2026-04-27)
 
-**✅ Data Sync Complete:** All 20 missing/truncated files copied from localhost to EC2.
-Hub summary pipeline counts now match (62 producing, 6 promoting, 6 publishing).
+### Issues Resolved
 
-**⚠️ Pending Issues (2):**
-1. **Messages Queue Discrepancy:** EC2 shows 14 queued vs localhost 22 — investigation needed
-2. **Port Race Condition:** GitHub Actions deploy doesn't kill old process, causing port 5051 binding
+**✅ Data Sync Complete:** All 20 missing/truncated files copied from localhost to EC2. Hub summary pipeline counts verified (62 producing, 6 promoting, 6 publishing).
 
-**👉 See `PHASE_4_DATA_SYNC_HANDOFF.md` for detailed issue descriptions and resolution steps.**
+**✅ Messages Queue Discrepancy FIXED:**
+- Root cause: `process_overdue_queue()` in migrate.py correctly marks messages with past `scheduled_at` times as "overdue"
+- 8 messages with April 25-27 scheduled times were converted from queued → overdue
+- Result: Both localhost and EC2 now show **messages_queued = 14** (correct)
+- Workflow: `utils/helpers.py:process_overdue_queue()` → marks past-scheduled messages as overdue
+- This is **correct behavior**, not a bug
 
-After next session resolves both issues:
-- EC2 and localhost will be in full parity
-- `localhost:5050` can be retired
-- Future coding sessions should use `claude.ai/code` (auto-deploy within ~60 seconds)
+**✅ Port Race Condition FIXED:**
+- Commit `270ec81`: Deploy script now kills old Python processes before restart
+- Updated `.github/workflows/deploy.yml` to add:
+  - `sudo pkill -9 -f "python.*app.py"`
+  - `sudo lsof -i :5050 -S -t | xargs -r kill -9`
+  - `sudo lsof -i :5051 -S -t | xargs -r kill -9`
+- Ensures service restart always binds to port 5050
+- GitHub Actions auto-deploy now works reliably
+
+### Final Validation (2026-04-27)
+```
+✅ LOCALHOST: messages_queued=14, pipeline=62/6/6, API responding
+✅ EC2:       messages_queued=14, pipeline=62/6/6, API responding
+✅ Deploy:    Fixed, tested, and pushed to main
+```
 
 ---
 
-## What's Next (Phase 4 Final Steps)
+## What's Next
 
-**Next Session:**
-1. Diagnose messages queue discrepancy (check migrate.py, sync logic)
-2. Harden GitHub Actions deploy script to kill old processes before restart
-3. Verify both issues resolved with final validation test
-4. Mark Phase 4 complete
+**Phase 5: Discord Bot Testing** — See `PHASE_5_DISCORD_BOT_TESTING.md`
 
-See `PHASE_4_DATA_SYNC_HANDOFF.md` for copy-paste instructions.
+Next session will:
+1. Use Claude Code on the web (Haiku model)
+2. Test all Discord bot functionalities end-to-end
+3. Document which workflows pass/fail
+4. Report findings for Sonnet to fix in follow-up session
