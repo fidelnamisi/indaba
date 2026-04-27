@@ -23,6 +23,10 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
+# Per-channel conversation history so the agent remembers context across turns.
+# channel_id → list of message dicts (role/content), capped at 30 items.
+_channel_history: dict[int, list] = {}
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _in_ops_channel(ctx_or_message) -> bool:
@@ -126,9 +130,11 @@ async def on_message(message):
 async def _handle_natural_language(message: discord.Message):
     """
     Route any non-! message through the Claude agent.
-    The agent has access to all Indaba tools and can chain multiple calls.
+    Maintains per-channel history so the agent remembers context across turns.
     """
-    # Send a working indicator immediately so Fidel knows the bot is busy
+    channel_id = message.channel.id
+    history = _channel_history.get(channel_id, [])
+
     status_msg = await message.channel.send("*Working…*")
     steps = []
 
@@ -136,11 +142,11 @@ async def _handle_natural_language(message: discord.Message):
         steps.append(step_text)
 
     try:
-        result = await asyncio.to_thread(
-            claude_agent.run_agent, message.content, on_progress
+        result, updated_history = await asyncio.to_thread(
+            claude_agent.run_agent, message.content, history, on_progress
         )
+        _channel_history[channel_id] = updated_history
 
-        # Build final reply: steps taken + result
         reply_parts = []
         if steps:
             reply_parts.append("**Steps taken:**\n" + "\n".join(steps))
@@ -290,22 +296,22 @@ async def _do_idea(reply, text: str):
 
 async def _do_help(reply):
     help_text = textwrap.dedent("""
-        **Indaba Bot — Commands**
+        **Indaba Bot — Natural language is the primary interface.**
 
-        `!hub`                    Pipeline overview and summary
-        `!pipeline [book] [stage]` List pipeline entries (filter optional)
-        `!entry <id>`             Get details on one pipeline entry
-        `!stage <id> <stage>`     Move entry to producing|publishing|promoting
-        `!publish <id>`           Publish chapter to the website
-        `!deploy`                 Deploy website to Amplify
-        `!deploystatus`           Check deploy status
-        `!sync <work_code>`       Compare pipeline vs live website
-        `!works`                  List all works / book series
-        `!status`                 EC2 sender health
-        `!idea <text>`            Add idea to ROADMAP.md (pushed to GitHub)
-        `!help`                   This message
+        Just talk to me: "Generate the next proverb", "Publish chapter 3 of Love Back",
+        "What's in the pipeline?", "Move OAO ch5 to publishing"
 
-        You can also just **talk naturally** — I'll figure out what you mean.
+        For **write operations** (generate, queue, publish, deploy) I'll show a preview
+        and ask you to say **yes** before doing anything.
+        For **read operations** (hub, pipeline, status) I respond immediately.
+
+        **Quick shortcuts:**
+        `!hub`                     Pipeline overview
+        `!pipeline [book] [stage]`  List entries (filter optional)
+        `!works`                   List all book series
+        `!status`                  EC2 sender health
+        `!idea <text>`             Capture idea → ROADMAP.md → GitHub
+        `!help`                    This message
 
         *Book codes: LB, OAO, ROTRQ, MOSAS*
         *Stages: producing, publishing, promoting*

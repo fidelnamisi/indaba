@@ -386,34 +386,60 @@ SYSTEM_PROMPT = """You are Indaba Bot, the AI operator for Fidel Namisi's publis
 
 Fidel is a professional author publishing African fantasy fiction. You help him manage his content pipeline, publish chapters, and run his WhatsApp promo channel.
 
-Your job: understand what Fidel wants and use your tools to make it happen. For multi-step tasks (e.g. "generate and queue 5 proverbs"), plan the steps, execute them in sequence using tools, and report back with a clear summary.
+## Conversation memory
+You remember this channel's conversation history. Use it for context — if Fidel says "yes", "go ahead", "do it", "ok", "confirm", "queue it", "ship it", "looks good", or similar affirmations, execute whatever write action you last previewed. If he says "no", "skip", "cancel", or "different one", abandon the pending action and offer alternatives.
 
-Rules:
-- Always use tools to get real data before answering questions about pipeline state.
-- For "create and queue" tasks: generate first, then queue.
-- Keep responses concise. Use bullet points for lists of results.
-- If a task partially fails, complete what you can and report what failed.
+## Two types of operations
+
+### Read operations — execute immediately, no confirmation needed
+Use tools and return results directly for any informational request:
+- Pipeline overview, hub summary, works list, deploy status, entry details
+- Proverb library listing, scheduler preview, leads summary, audio file listing
+- Any request that is purely "show me" or "what is"
+
+### Write operations — ALWAYS preview first, then wait for "yes"
+For any action that creates, modifies, publishes, queues, or deploys:
+1. Use read tools to gather what you need (entry details, next proverb ID, etc.)
+2. Show a clear preview: exactly what will be created, changed, sent, or published
+3. End your message with: **"Say 'yes' to confirm or 'no' to cancel."**
+4. Do NOT call the write tool yet — wait for confirmation
+5. Only call the write tool after the user confirms
+
+Write operations requiring preview + confirmation:
+- Generating broadcast posts (promo_broadcast_generate, proverbs_generate_batch)
+- Queuing anything for delivery (promo_broadcast_queue, work_queue_module, flash_fiction_publish_queue)
+- Publishing to the website (website_publish)
+- Deploying the website (website_deploy)
+- Moving pipeline stages (pipeline_set_stage)
+- Generating chapter assets (generate_asset)
+- Running the scheduler live (scheduler_run with dry_run=false)
+- Creating proverbs in bulk (proverbs_create_batch)
+- Uploading audio (audio_upload)
+
+## Style
+- Keep responses concise. Use bullet points for lists.
 - Book codes: LB=Love Back, OAO=Outlaws and Outcasts, ROTRQ=Rise of the Rain Queen, MOSAS=Mothers of Suns and Stars
 - Stages: producing → publishing → promoting
+- If a task partially fails, complete what you can and report what failed.
 """
 
 
 # ── Agentic loop ──────────────────────────────────────────────────────────────
 
-def run_agent(user_message: str, progress_callback=None) -> str:
+def run_agent(user_message: str, history: list = None, progress_callback=None) -> tuple:
     """
     Run the full agentic loop for a user message.
 
+    history: prior conversation messages for this channel (enables multi-turn memory)
     progress_callback(text): called with intermediate status messages
-    so the Discord bot can show "Calling promo_broadcast_generate..." etc.
 
-    Returns the final text response from Claude.
+    Returns (response_text, updated_history).
     """
     if not ANTHROPIC_API_KEY:
-        return "ANTHROPIC_API_KEY not set — cannot process requests."
+        return "ANTHROPIC_API_KEY not set — cannot process requests.", []
 
     client = _get_client()
-    messages = [{"role": "user", "content": user_message}]
+    messages = list(history or []) + [{"role": "user", "content": user_message}]
 
     for _ in range(20):  # max 20 tool-call rounds
         response = client.messages.create(
@@ -425,11 +451,9 @@ def run_agent(user_message: str, progress_callback=None) -> str:
         )
 
         if response.stop_reason == "end_turn":
-            # Extract final text
-            for block in response.content:
-                if hasattr(block, "text"):
-                    return block.text
-            return "Done."
+            messages.append({"role": "assistant", "content": response.content})
+            text = next((b.text for b in response.content if hasattr(b, "text")), "Done.")
+            return text, messages[-30:]
 
         if response.stop_reason == "tool_use":
             messages.append({"role": "assistant", "content": response.content})
@@ -450,4 +474,4 @@ def run_agent(user_message: str, progress_callback=None) -> str:
         else:
             break
 
-    return "Reached tool call limit without a final answer."
+    return "Reached tool call limit without a final answer.", messages[-30:]
