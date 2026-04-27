@@ -130,7 +130,7 @@ TOOLS = [
     },
     {
         "name": "promo_broadcast_queue",
-        "description": "Queue a generated broadcast post for delivery to the WhatsApp channel via EC2 sender.",
+        "description": "Queue a previously generated proverb for WhatsApp delivery. Only call this after Fidel has approved the preview — never auto-queue without approval.",
         "input_schema": {
             "type": "object",
             "properties": {

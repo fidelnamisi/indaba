@@ -297,18 +297,39 @@ async def _do_preview(reply):
         await reply(f"Preview failed: {e}")
 
 
-async def _do_generate_and_queue(reply, proverb_id: str):
-    if not proverb_id:
-        await reply("Provide a proverb ID from `!preview`. E.g. `!generate abc-123`")
-        return
-    await reply(f"Generating image for `{proverb_id}`… (takes ~30s)")
+async def _do_generate(reply, proverb_id: str):
+    await reply(f"Generating proverb post… (takes ~30s)")
     try:
-        await asyncio.to_thread(api.promo_broadcast_generate, proverb_id)
-        queue_data = await asyncio.to_thread(api.promo_broadcast_queue, proverb_id)
-        scheduled_at = queue_data.get("scheduled_at", "?")
-        await reply(f"Done! Queued for **{scheduled_at}**")
+        data = await asyncio.to_thread(api.promo_broadcast_generate, proverb_id)
+        if "error" in data:
+            await reply(f"Generation failed: {data['error']}")
+            return
+        pid = data.get("proverb_id") or proverb_id or "?"
+        text_out = (
+            f"**Generated — `{pid}`**\n\n"
+            f"**Proverb:**\n{data.get('proverb_text', data.get('text', '?'))}\n\n"
+            f"**Caption:**\n{data.get('meaning', data.get('caption', '?'))}\n\n"
+            f"Queue it? → `!queue {pid}`\n"
+            f"Skip it? → just ignore this"
+        )
+        await reply(text_out)
     except Exception as e:
-        await reply(f"Generate/queue failed: {e}")
+        await reply(f"Generation failed: {e}")
+
+
+async def _do_queue_proverb(reply, proverb_id: str):
+    if not proverb_id:
+        await reply("Provide a proverb ID. E.g. `!queue abc-123`")
+        return
+    try:
+        data = await asyncio.to_thread(api.promo_broadcast_queue, proverb_id)
+        if data.get("already_exists"):
+            await reply(f"`{proverb_id}` is already scheduled.")
+            return
+        scheduled_at = data.get("scheduled_at", "?")
+        await reply(f"Scheduled `{proverb_id}` for **{scheduled_at}**")
+    except Exception as e:
+        await reply(f"Queue failed: {e}")
 
 
 async def _do_idea(reply, text: str):
@@ -337,7 +358,8 @@ async def _do_help(reply):
         `!works`                  List all works / book series
         `!status`                 EC2 sender health
         `!preview`                Preview next proverb caption (no image yet)
-        `!generate <id>`          Create image + schedule (use ID from !preview)
+        `!generate [id]`          Generate image + caption, shows preview
+        `!queue <id>`             Schedule a generated proverb for delivery
         `!idea <text>`            Add idea to ROADMAP.md (pushed to GitHub)
         `!help`                   This message
 
@@ -420,7 +442,13 @@ async def cmd_preview(ctx):
 @bot.command(name="generate")
 async def cmd_generate(ctx, proverb_id: str = ""):
     if not _in_ops_channel(ctx): return
-    await _do_generate_and_queue(lambda t: _reply(ctx, t), proverb_id)
+    await _do_generate(lambda t: _reply(ctx, t), proverb_id)
+
+
+@bot.command(name="queue")
+async def cmd_queue(ctx, proverb_id: str = ""):
+    if not _in_ops_channel(ctx): return
+    await _do_queue_proverb(lambda t: _reply(ctx, t), proverb_id)
 
 
 @bot.command(name="idea")
