@@ -64,9 +64,29 @@ ssh -i ~/Indaba/ec2-key.pem ubuntu@13.218.60.13
 
 ---
 
+## Known Issue: Auto-Deploy Port Race Condition
+
+When GitHub Actions restarts `indaba-app`, if the old process is still alive, the new one
+binds to port 5051 instead of 5050, causing 502 errors. Fix: pre-kill the process before
+restart. The deploy script should be hardened in Phase 4.
+
+**Workaround if you see 502 after a push:**
+```bash
+ssh -i ~/Indaba/ec2-key.pem ubuntu@13.218.60.13 \
+  'sudo kill $(sudo lsof -ti:5051) 2>/dev/null; sudo systemctl restart indaba-app'
+```
+
+---
+
 ## What's Next (Phase 4)
 
-Phase 4 feature work can begin. Future coding sessions should use claude.ai/code.
-Pushes to `main` auto-deploy within ~60 seconds — no manual SSH needed.
+**Before feature work begins:** Run a full end-to-end comparison between
+`localhost:5050` and `https://indaba.realmsandroads.com` to surface all defects in
+the EC2 version. Known issue already identified: People > Contacts is empty on EC2
+(data sync may be incomplete or a route is broken).
 
-`localhost:5050` is retired. Use `https://indaba.realmsandroads.com`.
+See `PHASE_4_TEST_INSTRUCTIONS.md` for the full testing brief.
+
+After testing is complete and defects are fixed, `localhost:5050` can be retired.
+Future coding sessions should use `claude.ai/code` — pushes to `main` auto-deploy
+within ~60 seconds, no SSH needed.
