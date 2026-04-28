@@ -154,7 +154,17 @@ def composite_proverb_image(photo_url, proverb_text, attribution, meaning, cta):
     draw.rectangle([(0, PHOTO_H), (W, H)], fill=BROWN)
 
     def font(name, size):
-        return ImageFont.truetype(os.path.join(FONTS_DIR, name), size)
+        path = os.path.join(FONTS_DIR, name)
+        try:
+            return ImageFont.truetype(path, size)
+        except (OSError, IOError) as exc:
+            exists = os.path.exists(path)
+            sz = os.path.getsize(path) if exists else None
+            raise RuntimeError(
+                f"Font load failed: name={name} path={path} "
+                f"exists={exists} size={sz} fonts_dir={FONTS_DIR} "
+                f"dir_exists={os.path.isdir(FONTS_DIR)} underlying={exc}"
+            ) from exc
 
     f_quote   = font('PlayfairDisplay-SemiBoldItalic.ttf', 48)
     f_attr    = font('PlayfairDisplay-Italic.ttf', 28)

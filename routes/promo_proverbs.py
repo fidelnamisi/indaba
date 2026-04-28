@@ -3,14 +3,72 @@ Promo proverbs routes — CRUD, bulk import, CSV export.
 """
 import csv
 import io
+import os
 import uuid
 from datetime import datetime
 
 from flask import Blueprint, jsonify, make_response, request
 from utils.json_store import read_json, write_json
-from utils.constants import PROMO_PROVERBS_FILE
+from utils.constants import FONTS_DIR, GENERATED_IMAGES_DIR, PROMO_PROVERBS_FILE
 
 bp = Blueprint('promo_proverbs', __name__)
+
+
+@bp.route('/api/promo/proverbs/_debug_env', methods=['GET'])
+def proverb_debug_env():
+    """One-shot environment dump for debugging proverb image generation."""
+    expected_fonts = [
+        'PlayfairDisplay-SemiBoldItalic.ttf',
+        'PlayfairDisplay-Italic.ttf',
+        'Inter-Bold.ttf',
+        'Inter-Regular.ttf',
+        'Inter-SemiBold.ttf',
+    ]
+    fonts_status = {}
+    for name in expected_fonts:
+        p = os.path.join(FONTS_DIR, name)
+        exists = os.path.exists(p)
+        fonts_status[name] = {
+            "path": p,
+            "exists": exists,
+            "size": os.path.getsize(p) if exists else None,
+            "readable": os.access(p, os.R_OK) if exists else False,
+        }
+    try:
+        listing = sorted(os.listdir(FONTS_DIR)) if os.path.isdir(FONTS_DIR) else None
+    except Exception as e:
+        listing = f"error: {e}"
+
+    pil_info = {}
+    try:
+        import PIL
+        from PIL import ImageFont
+        pil_info["pillow_version"] = getattr(PIL, "__version__", "unknown")
+        try:
+            test_path = os.path.join(FONTS_DIR, 'Inter-Regular.ttf')
+            ImageFont.truetype(test_path, 20)
+            pil_info["truetype_test"] = "ok"
+        except Exception as e:
+            pil_info["truetype_test"] = f"fail: {type(e).__name__}: {e}"
+    except Exception as e:
+        pil_info["import_error"] = str(e)
+
+    return jsonify({
+        "fonts_dir": FONTS_DIR,
+        "fonts_dir_exists": os.path.isdir(FONTS_DIR),
+        "fonts_dir_listing": listing,
+        "expected_fonts": fonts_status,
+        "generated_images_dir": GENERATED_IMAGES_DIR,
+        "generated_images_dir_exists": os.path.isdir(GENERATED_IMAGES_DIR),
+        "generated_images_writable": os.access(GENERATED_IMAGES_DIR, os.W_OK)
+            if os.path.isdir(GENERATED_IMAGES_DIR) else False,
+        "pil": pil_info,
+        "google_sa_key_set": bool(os.environ.get('GOOGLE_SA_KEY')),
+        "google_sa_key_exists": os.path.exists(os.environ.get('GOOGLE_SA_KEY', ''))
+            if os.environ.get('GOOGLE_SA_KEY') else False,
+        "gowa_channel_id_set": bool(os.environ.get('GOWA_CHANNEL_ID')),
+        "cwd": os.getcwd(),
+    })
 
 
 @bp.route('/api/promo/proverbs', methods=['GET'])
