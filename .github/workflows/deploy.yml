@@ -43,22 +43,30 @@ jobs:
             set -x
 
             # Clone as the ubuntu user (no sudo) into /tmp. The repo is
-            # private so the request carries the workflow's GITHUB_TOKEN
-            # as a bearer header.
+            # private so we authenticate via the standard GitHub HTTPS
+            # auth pattern — `x-access-token:$TOKEN@github.com`. The
+            # `http.extraHeader: Authorization: bearer` approach did not
+            # work because git still prompts for a username when the URL
+            # has no userinfo, regardless of headers.
+            # GIT_TERMINAL_PROMPT=0 belt-and-braces: ensures git fails
+            # cleanly instead of hanging if auth ever does fall through.
             rm -rf "$TMPCLONE"
             { set +x; } 2>/dev/null
-            git -c http.extraHeader="Authorization: bearer $TOKEN" \
-              clone --depth=1 --branch main \
-              https://github.com/fidelnamisi/indaba.git "$TMPCLONE"
+            GIT_TERMINAL_PROMPT=0 git clone --depth=1 --branch main \
+              "https://x-access-token:${TOKEN}@github.com/fidelnamisi/indaba.git" \
+              "$TMPCLONE"
+            # Strip the credentialed remote URL immediately so the token
+            # doesn't sit in $TMPCLONE/.git/config any longer than needed.
+            git -C "$TMPCLONE" remote set-url origin https://github.com/fidelnamisi/indaba.git
             unset TOKEN
             set -x
 
-            # Move the fresh clone into /opt and reset the remote URL so
-            # the token doesn't persist in .git/config.
+            # Move the fresh clone into /opt. The remote URL was already
+            # stripped of the token above, so /opt/indaba-app/.git/config
+            # ends up clean.
             sudo rm -rf "$STAGE"
             sudo mv "$TMPCLONE" "$STAGE"
             sudo chown -R ubuntu:ubuntu "$STAGE"
-            git -C "$STAGE" remote set-url origin https://github.com/fidelnamisi/indaba.git
 
             # Preserve runtime state from current deploy:
             # - data/ holds bot-written proverbs, pcloud_token.json, etc.
