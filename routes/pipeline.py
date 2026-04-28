@@ -395,6 +395,11 @@ def create_catalog_work():
         'website_url': data.get('website_url', ''),
         'created_at':  now,
     }
+    if 'price' in data and data['price'] is not None:
+        try:
+            new_work['price'] = float(data['price'])
+        except (ValueError, TypeError):
+            pass
     catalog['works'].append(new_work)
     write_json('catalog_works.json', catalog)
 
@@ -506,7 +511,7 @@ def _bulk_import_chapters(work_code, text):
 
 @bp.route('/api/catalog-works/<work_id>', methods=['PUT'])
 def update_catalog_work(work_id):
-    """Update Work metadata (title, genre, patreon_url, website_url, author)."""
+    """Update Work metadata (title, genre, patreon_url, website_url, author, price)."""
     data    = request.get_json() or {}
     catalog = read_json('catalog_works.json') or {'works': []}
     for i, w in enumerate(catalog.get('works', [])):
@@ -515,6 +520,11 @@ def update_catalog_work(work_id):
             for k in allowed:
                 if k in data:
                     catalog['works'][i][k] = data[k]
+            if 'price' in data:
+                try:
+                    catalog['works'][i]['price'] = float(data['price']) if data['price'] is not None else None
+                except (ValueError, TypeError):
+                    pass
             write_json('catalog_works.json', catalog)
             return jsonify(catalog['works'][i])
     return jsonify({'error': 'Not found'}), 404

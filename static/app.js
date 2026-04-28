@@ -486,6 +486,9 @@ function renderPipelineDrilldown(allModules) {
           ${isSubscription ? '' : `
           <button class="pipeline-open-btn" style="font-size:11px;padding:3px 10px;"
                   onclick="event.stopPropagation();openAddModuleModal('${encodedId}','${encodedType}')">+ Module</button>`}
+          ${isSubscription ? `
+          <button class="pipeline-open-btn" style="font-size:11px;padding:3px 10px;"
+                  onclick="event.stopPropagation();openEditSubscriptionModal('${encodedId}')">Edit</button>` : ''}
           <button class="pipeline-open-btn" style="font-size:11px;padding:3px 10px;color:var(--muted);border-color:var(--muted);"
                   onclick="event.stopPropagation();confirmDeleteWork('${encodedId}')">Delete</button>
           ${isSubscription ? '' : `<span class="works-row-expand">${isExpanded ? '▲' : '▼'}</span>`}
@@ -1590,6 +1593,63 @@ async function submitAddModule(encodedWorkId, encodedWorkType) {
   }
 }
 
+// ── Edit Subscription Work ─────────────────────────────────────────────────
+
+async function openEditSubscriptionModal(encodedWorkId) {
+  const workId = decodeURIComponent(encodedWorkId);
+  const mc = document.getElementById('modal-content');
+  if (!mc) return;
+  mc.innerHTML = '<div style="padding:20px;color:var(--muted);">Loading…</div>';
+  showModal();
+  try {
+    const catalog = await GET('/api/catalog-works');
+    const work = (catalog.works || []).find(w => w.id === workId);
+    if (!work) { mc.innerHTML = '<div style="padding:20px;">Work not found.</div>'; return; }
+    mc.innerHTML = `
+      <div class="modal-title">Edit Subscription</div>
+      <div class="form-group" style="margin-top:16px;">
+        <label class="form-label">Title</label>
+        <input id="es-title" class="form-input" value="${esc(work.title)}" placeholder="Subscription title"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Price (R/month)</label>
+        <input id="es-price" class="form-input" type="number" min="0" step="0.01" value="${work.price != null ? work.price : ''}" placeholder="e.g. 30"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Patreon URL <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
+        <input id="es-patreon-url" class="form-input" value="${esc(work.patreon_url||'')}" placeholder="https://patreon.com/..."/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Website URL <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
+        <input id="es-website-url" class="form-input" value="${esc(work.website_url||'')}" placeholder="https://..."/>
+      </div>
+      <div class="modal-actions" style="display:flex;justify-content:space-between;margin-top:24px;">
+        <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn-primary" onclick="submitEditSubscription('${encodedWorkId}')">Save Changes</button>
+      </div>`;
+  } catch(e) {
+    mc.innerHTML = `<div style="padding:20px;color:var(--p1);">Error: ${e.message}</div>`;
+  }
+}
+
+async function submitEditSubscription(encodedWorkId) {
+  const workId    = decodeURIComponent(encodedWorkId);
+  const title     = document.getElementById('es-title')?.value.trim();
+  const priceRaw  = document.getElementById('es-price')?.value.trim();
+  const patreonUrl= document.getElementById('es-patreon-url')?.value.trim() || '';
+  const websiteUrl= document.getElementById('es-website-url')?.value.trim() || '';
+  if (!title) { toast('Title is required', 'error'); return; }
+  const payload = { title, patreon_url: patreonUrl, website_url: websiteUrl };
+  if (priceRaw !== '') payload.price = parseFloat(priceRaw);
+  try {
+    await PUT(`/api/catalog-works/${encodeURIComponent(workId)}`, payload);
+    pipelineState.overviewData = null; pipelineState.catalogWorks = null;
+    closeModal();
+    toast('Subscription updated.', 'success');
+    await loadProducing();
+  } catch(e) { toast('Update failed: ' + e.message, 'error'); }
+}
+
 // ── Delete Work / Module ──────────────────────────────────────────────────────
 
 async function confirmDeleteWork(encodedWorkId) {
@@ -1648,7 +1708,8 @@ function selectNewWorkType(workType) {
 }
 
 function renderNewWorkForm(workType) {
-  const isBook = workType === 'Book';
+  const isBook         = workType === 'Book';
+  const isSubscription = workType === 'Subscription';
 
   const bookFields = isBook ? `
     <div class="form-group">
@@ -1676,6 +1737,12 @@ function renderNewWorkForm(workType) {
       </div>
     </div>` : '';
 
+  const subscriptionFields = isSubscription ? `
+    <div class="form-group">
+      <label class="form-label">Price (R/month)</label>
+      <input id="nw-price" class="form-input" type="number" min="0" step="0.01" placeholder="e.g. 30"/>
+    </div>` : '';
+
   return `
     <div class="modal-title">New ${workType}</div>
     <div class="form-group" style="margin-top:16px;">
@@ -1687,6 +1754,7 @@ function renderNewWorkForm(workType) {
       <input id="nw-author" class="form-input" placeholder="Author name" value="Fidel Namisi"/>
     </div>
     ${bookFields}
+    ${subscriptionFields}
     <div class="form-group">
       <label class="form-label">Patreon URL <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
       <input id="nw-patreon-url" class="form-input" placeholder="https://patreon.com/..."/>
@@ -1710,6 +1778,8 @@ async function submitNewWork(workType) {
   const patreonUrl  = document.getElementById('nw-patreon-url')?.value.trim() || '';
   const websiteUrl  = document.getElementById('nw-website-url')?.value.trim() || '';
   const chaptersText= document.getElementById('nw-chapters-text')?.value.trim() || '';
+  const priceRaw    = document.getElementById('nw-price')?.value.trim() || '';
+  const price       = priceRaw ? parseFloat(priceRaw) : null;
 
   if (!title) { toast('Title is required', 'error'); return; }
   if (workType === 'Book') {
@@ -1718,12 +1788,14 @@ async function submitNewWork(workType) {
   }
 
   try {
-    const result = await POST('/api/catalog-works', {
+    const payload = {
       title, work_type: workType, author, genre,
       series_code: seriesCode, url_slug: urlSlug,
       patreon_url: patreonUrl, website_url: websiteUrl,
       chapters_text: chaptersText,
-    });
+    };
+    if (price !== null) payload.price = price;
+    const result = await POST('/api/catalog-works', payload);
     const imported = result.chapters_imported || 0;
     closeModal();
     toast(`Created "${title}"${imported ? ` · ${imported} chapters imported` : ''}`, 'success');
@@ -11158,6 +11230,8 @@ function _renderContactDetail(contactId) {
       <div>${leadRows}</div>
     </div>
     <div class="crm-detail-actions">
+      <button class="btn-secondary" style="font-size:12px;"
+        onclick="openEditContactModal('${contactId}')">Edit Contact</button>
       <button class="btn-secondary" style="font-size:12px;color:var(--danger,#e74c3c);border-color:var(--danger,#e74c3c);"
         onclick="deleteContact('${contactId}')">Delete Contact</button>
     </div>`;
@@ -11179,6 +11253,49 @@ async function deleteContact(id) {
     if (state.crm.selectedContactId === id) closeContactDetail();
     renderCRMContacts();
     toast('Contact deleted.', 'success');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+function openEditContactModal(contactId) {
+  const contact = state.crm.contacts.find(c => c.id === contactId);
+  if (!contact) return;
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">Edit Contact</div>
+    <label class="modal-label">Name *</label>
+    <input id="ec-name" class="modal-input" value="${esc(contact.name)}" placeholder="Full name">
+    <label class="modal-label">Phone (E.164)</label>
+    <input id="ec-phone" class="modal-input" value="${esc(contact.phone||'')}" placeholder="+27821234567">
+    <label class="modal-label">Email</label>
+    <input id="ec-email" class="modal-input" value="${esc(contact.email||'')}" placeholder="email@example.com">
+    <label class="modal-label">Notes</label>
+    <textarea id="ec-notes" class="modal-input" rows="2">${esc(contact.notes||'')}</textarea>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="submitEditContact('${contactId}')">Save Changes</button>
+    </div>`;
+  showModal();
+}
+
+async function submitEditContact(contactId) {
+  const name  = document.getElementById('ec-name').value.trim();
+  const phone = document.getElementById('ec-phone').value.trim();
+  const email = document.getElementById('ec-email').value.trim();
+  const notes = document.getElementById('ec-notes').value.trim();
+  if (!name) { toast('Name is required', 'error'); return; }
+  try {
+    const r = await fetch(`/api/crm/contacts/${contactId}`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name, phone, email, notes }),
+    });
+    if (!r.ok) { const e = await r.json(); toast(e.error || 'Update failed', 'error'); return; }
+    const updated = await r.json();
+    const idx = state.crm.contacts.findIndex(c => c.id === contactId);
+    if (idx >= 0) state.crm.contacts[idx] = updated;
+    closeModal();
+    renderCRMContacts();
+    _renderContactDetail(contactId);
+    toast('Contact updated.', 'success');
   } catch(e) { toast(e.message, 'error'); }
 }
 
