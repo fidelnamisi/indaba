@@ -15,27 +15,34 @@ jobs:
           script_stop: true
           command_timeout: 10m
           script: |
-            set -e
+            set -eux
             cd /opt/indaba-app
 
-            # Always pin the working tree to origin/main. Idempotent: avoids
-            # merge conflicts from drifted local state, and the data/ dir is
-            # gitignored so EC2 runtime files (pcloud_token.json, proverbs the
-            # bot writes, etc.) are preserved.
-            if [ ! -d ".git" ]; then
-              echo "[deploy] Initialising git repo..."
-              git init
+            # Ensure the working tree is owned by ubuntu so git can always
+            # rewrite files. Past root-owned files (e.g. from initial scp
+            # bootstrap) are the most likely cause of `git checkout`
+            # failing silently and aborting the deploy.
+            sudo chown -R ubuntu:ubuntu /opt/indaba-app
+
+            # Bulletproof git sync — end with HEAD on `main` pointing at
+            # origin/main, regardless of any prior state (unborn branch,
+            # detached HEAD, missing/corrupt .git, drifted working tree).
+            # Uses plumbing commands (update-ref / symbolic-ref) instead of
+            # porcelain `git checkout`, which fails on unborn branches.
+            if [ ! -d ".git" ] || ! git rev-parse --git-dir >/dev/null 2>&1; then
+              echo "[deploy] Rebuilding .git from scratch..."
+              rm -rf .git
+              git init -q
               git remote add origin https://github.com/fidelnamisi/indaba.git
             else
               git remote set-url origin https://github.com/fidelnamisi/indaba.git
             fi
             git fetch --depth=1 origin main
-            # Force HEAD onto a real `main` branch pointing at fetched main.
-            # Recovers from broken states (unborn `master`, detached HEAD, etc.)
-            # where `git reset --hard origin/main` aborts the workflow before
-            # systemctl restart. -f discards any local working-tree drift.
-            git checkout -f -B main FETCH_HEAD
-            git reset --hard FETCH_HEAD
+            git update-ref refs/heads/main FETCH_HEAD
+            git symbolic-ref HEAD refs/heads/main
+            git reset --hard refs/heads/main
+            # Purge untracked drift; venv/ and data/ are gitignored so survive.
+            git clean -fd
 
             # Create venv if missing so pip install doesn't silently go global.
             if [ ! -d "venv" ]; then
@@ -73,4 +80,4 @@ jobs:
               sudo journalctl -u indaba-app -n 80 --no-pager || true
               exit 1
             fi
-            echo "✓ Health check passed — app is serving"
+            echo "Health check passed — app is serving"
