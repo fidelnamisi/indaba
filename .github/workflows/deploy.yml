@@ -12,25 +12,60 @@ jobs:
           host: 13.218.60.13
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
+          command_timeout: 10m
           script: |
+            set -e
             cd /opt/indaba-app
+
+            # Always pin the working tree to origin/main. Idempotent: avoids
+            # merge conflicts from drifted local state, and the data/ dir is
+            # gitignored so EC2 runtime files (pcloud_token.json, proverbs the
+            # bot writes, etc.) are preserved.
             if [ ! -d ".git" ]; then
+              echo "[deploy] Initialising git repo..."
               git init
               git remote add origin https://github.com/fidelnamisi/indaba.git
-              git fetch origin main
-              git reset --hard origin/main
             else
-              git pull origin main
+              git remote set-url origin https://github.com/fidelnamisi/indaba.git
+            fi
+            git fetch --depth=1 origin main
+            git reset --hard origin/main
+
+            # Create venv if missing so pip install doesn't silently go global.
+            if [ ! -d "venv" ]; then
+              echo "[deploy] Creating venv..."
+              python3 -m venv venv
             fi
             source venv/bin/activate
-            pip install -r requirements.txt -q
+            python -m pip install --upgrade pip
+            pip install -r requirements.txt
+
+            # Stop any stale processes / port holders before systemd restart.
             sudo pkill -9 -f "python.*app.py" || true
-            sudo lsof -i :5050 -S -t | xargs -r kill -9 || true
-            sudo lsof -i :5051 -S -t | xargs -r kill -9 || true
+            sudo lsof -ti :5050 | xargs -r sudo kill -9 || true
+            sudo lsof -ti :5051 | xargs -r sudo kill -9 || true
             sleep 2
+
             sudo systemctl restart indaba-app
             sleep 6
-            sudo systemctl is-active indaba-app
-            curl -sf http://localhost:5050/api/content-pipeline > /dev/null \
-              && echo "✓ Health check passed — app is serving" \
-              || (echo "✗ Health check FAILED — app not responding on :5050" && exit 1)
+
+            # Loud diagnostics if the service didn't come up.
+            if ! sudo systemctl is-active --quiet indaba-app; then
+              echo "::error::indaba-app service did not become active"
+              echo "--- systemctl status ---"
+              sudo systemctl status indaba-app --no-pager || true
+              echo "--- last 80 journal lines ---"
+              sudo journalctl -u indaba-app -n 80 --no-pager || true
+              exit 1
+            fi
+
+            if ! curl -sf --max-time 15 http://localhost:5050/api/content-pipeline > /dev/null; then
+              echo "::error::Health check FAILED — app not responding on :5050"
+              echo "--- listening ports ---"
+              sudo lsof -i :5050 || true
+              echo "--- last 80 journal lines ---"
+              sudo journalctl -u indaba-app -n 80 --no-pager || true
+              exit 1
+            fi
+            echo "✓ Health check passed — app is serving"

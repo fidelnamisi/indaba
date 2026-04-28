@@ -7,7 +7,6 @@ on:
 
 jobs:
   smoke:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -26,8 +25,11 @@ jobs:
         run: |
           set +e
           SSH="ssh -i ~/.ssh/ec2.pem -o StrictHostKeyChecking=no -o ConnectTimeout=15 ubuntu@13.218.60.13"
+          DEPLOY_CONCLUSION="${{ github.event.workflow_run.conclusion }}"
+          DEPLOY_CONCLUSION="${DEPLOY_CONCLUSION:-manual}"
           {
             echo "## Smoke test"
+            echo "- Deploy conclusion: \`$DEPLOY_CONCLUSION\`"
             echo "- Run: ${{ github.run_id }}"
             echo "- Commit: ${{ github.sha }}"
             echo "- Time (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
