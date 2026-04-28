@@ -2,17 +2,25 @@ name: Deploy to EC2
 on:
   push:
     branches: [main]
+permissions:
+  contents: read
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          # Repo is private, so EC2 needs a credential to git-clone. The
+          # workflow's GITHUB_TOKEN has contents:read scope and lasts only
+          # for this workflow run, which is exactly the right lifetime.
+          GH_TOKEN_FOR_CLONE: ${{ secrets.GITHUB_TOKEN }}
         with:
           host: 13.218.60.13
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
-          script_stop: false
+          envs: GH_TOKEN_FOR_CLONE
+          script_stop: true
           command_timeout: 10m
           script: |
             # Capture the entire deploy script's stdout+stderr to a log file
@@ -21,20 +29,34 @@ jobs:
             # are invisible to anyone without GitHub Actions log access.
             exec > >(tee /tmp/last-deploy.log) 2>&1
             echo "===== DEPLOY START $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
-            set -eux
+            set -eu
+            # Trace commands but mask the token in the URL.
+            export PS4='+ '
+            set -x
 
             WORK=/opt/indaba-app
             STAGE=/opt/indaba-app.stage
             BACKUP=/opt/indaba-app.previous
+            TMPCLONE=/tmp/indaba-stage
 
-            # Always build the new release in a sibling dir from a fresh
-            # clone. Avoids every broken-git-state failure mode (unborn
-            # branch, root-owned files, drifted working tree, missing .git)
-            # that has plagued past deploys.
+            # Clone as the ubuntu user (no sudo) into /tmp so git uses
+            # ubuntu's config, not root's. The repo is private so the
+            # request carries the workflow's GITHUB_TOKEN as a bearer.
+            # set +x around this block so the token never lands in
+            # /tmp/last-deploy.log (which the smoke workflow posts publicly).
+            rm -rf "$TMPCLONE"
+            { set +x; } 2>/dev/null
+            git -c http.extraHeader="Authorization: bearer $GH_TOKEN_FOR_CLONE" \
+              clone --depth=1 --branch main \
+              https://github.com/fidelnamisi/indaba.git "$TMPCLONE"
+            set -x
+
+            # Move the fresh clone into /opt and reset the remote URL so
+            # the token doesn't persist in .git/config.
             sudo rm -rf "$STAGE"
-            sudo git clone --depth=1 --branch main \
-              https://github.com/fidelnamisi/indaba.git "$STAGE"
+            sudo mv "$TMPCLONE" "$STAGE"
             sudo chown -R ubuntu:ubuntu "$STAGE"
+            git -C "$STAGE" remote set-url origin https://github.com/fidelnamisi/indaba.git
 
             # Preserve runtime state from current deploy:
             # - data/ holds bot-written proverbs, pcloud_token.json, etc.
