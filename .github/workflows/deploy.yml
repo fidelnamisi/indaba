@@ -16,88 +16,80 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script_stop: true
           command_timeout: 10m
-          # The token is substituted into the script string by GitHub
-          # Actions before the script is sent over SSH. Direct substitution
-          # is more reliable than `envs:` which has not been passing the
-          # env var through reliably in practice.
+          # GITHUB_TOKEN is substituted into the script string by GitHub
+          # Actions before the script is sent over SSH (more reliable
+          # than `envs:` which has not been passing through in practice).
           script: |
-            # Capture the entire deploy script's stdout+stderr to a log file
-            # on EC2 so the smoke-proverb workflow can read it even when the
-            # deploy fails. Without this, failures inside appleboy/ssh-action
-            # are invisible to anyone without GitHub Actions log access.
+            # Capture stdout+stderr to a log file the smoke-proverb
+            # workflow can read — the only way to see deploy failures
+            # without GitHub Actions log access.
             exec > >(tee /tmp/last-deploy.log) 2>&1
             echo "===== DEPLOY START $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
             set -eu
 
             WORK=/opt/indaba-app
-            STAGE=/opt/indaba-app.stage
-            BACKUP=/opt/indaba-app.previous
             TMPCLONE=/tmp/indaba-stage
 
-            # Set the token in an isolated subshell with no trace, so it
-            # never leaks into /tmp/last-deploy.log (which is posted to a
-            # public-style GitHub issue comment).
+            # Set the token in an isolated subshell with no trace, so
+            # it never lands in /tmp/last-deploy.log (which is posted
+            # to issue #1 publicly-style).
             { TOKEN='${{ secrets.GITHUB_TOKEN }}'; } 2>/dev/null
             echo "[diag] token present: $([ -n "$TOKEN" ] && echo yes || echo no), length: ${#TOKEN}"
 
             set -x
 
-            # Clone as the ubuntu user (no sudo) into /tmp. The repo is
-            # private so we authenticate via the standard GitHub HTTPS
-            # auth pattern — `x-access-token:$TOKEN@github.com`. The
-            # `http.extraHeader: Authorization: bearer` approach did not
-            # work because git still prompts for a username when the URL
-            # has no userinfo, regardless of headers.
-            # GIT_TERMINAL_PROMPT=0 belt-and-braces: ensures git fails
-            # cleanly instead of hanging if auth ever does fall through.
+            # Clone as ubuntu (no sudo) into /tmp. Repo is private so
+            # we authenticate via x-access-token:$TOKEN@github.com — the
+            # canonical GitHub HTTPS auth pattern that actions/checkout
+            # uses internally. GIT_TERMINAL_PROMPT=0 makes git fail
+            # cleanly instead of hanging if auth ever falls through.
             rm -rf "$TMPCLONE"
             { set +x; } 2>/dev/null
             GIT_TERMINAL_PROMPT=0 git clone --depth=1 --branch main \
               "https://x-access-token:${TOKEN}@github.com/fidelnamisi/indaba.git" \
               "$TMPCLONE"
-            # Strip the credentialed remote URL immediately so the token
-            # doesn't sit in $TMPCLONE/.git/config any longer than needed.
+            # Strip the credentialed URL immediately — token must not
+            # persist in any .git/config we move into /opt.
             git -C "$TMPCLONE" remote set-url origin https://github.com/fidelnamisi/indaba.git
             unset TOKEN
             set -x
 
-            # Move the fresh clone into /opt. The remote URL was already
-            # stripped of the token above, so /opt/indaba-app/.git/config
-            # ends up clean.
-            sudo rm -rf "$STAGE"
-            sudo mv "$TMPCLONE" "$STAGE"
-            sudo chown -R ubuntu:ubuntu "$STAGE"
-
-            # Preserve runtime state from current deploy:
-            # - data/ holds bot-written proverbs, pcloud_token.json, etc.
-            # - venv/ avoids re-running pip install on every deploy.
-            if [ -d "$WORK/data" ]; then
-              cp -a "$WORK/data" "$STAGE/data"
-            fi
-            if [ -d "$WORK/venv" ]; then
-              mv "$WORK/venv" "$STAGE/venv"
-            else
-              python3 -m venv "$STAGE/venv"
-            fi
-
-            # Sync python deps inside the staged venv before swapping.
-            "$STAGE/venv/bin/python" -m pip install --upgrade pip
-            "$STAGE/venv/bin/pip" install -r "$STAGE/requirements.txt"
-
-            # Stop the running service before swapping directories.
+            # Stop the running service before mutating /opt/indaba-app.
             sudo systemctl stop indaba-app || true
             sudo pkill -9 -f "python.*app.py" || true
             sudo lsof -ti :5050 | xargs -r sudo kill -9 || true
             sudo lsof -ti :5051 | xargs -r sudo kill -9 || true
             sleep 2
 
-            # Atomic-ish swap: keep the previous release as a rollback point.
-            sudo rm -rf "$BACKUP"
-            if [ -d "$WORK" ]; then
-              sudo mv "$WORK" "$BACKUP"
-            fi
-            sudo mv "$STAGE" "$WORK"
+            # rsync the new code into /opt/indaba-app, leaving venv/ and
+            # data/ untouched. This is critical: pip-installed scripts
+            # in venv/bin have absolute-path shebangs, so the venv MUST
+            # stay at /opt/indaba-app/venv permanently. Moving it to a
+            # staging path (the previous deploy strategy) corrupted the
+            # shebangs and produced systemd 203/EXEC failures on restart.
+            #
+            # --delete removes files removed in the new clone, but the
+            # --exclude rules keep venv/, data/, and pcloud token files
+            # intact regardless.
+            sudo mkdir -p "$WORK"
+            sudo rsync -a --delete \
+              --exclude='/venv' \
+              --exclude='/data' \
+              "$TMPCLONE/" "$WORK/"
             sudo chown -R ubuntu:ubuntu "$WORK"
+
+            # Create venv from scratch every deploy. Slightly slower
+            # (~30s) but bulletproof: any stale shebangs from a prior
+            # broken deploy are wiped clean. A pip-installed script in
+            # a venv has its shebang baked in as an absolute path, so
+            # any prior path drift would persist forever otherwise.
+            sudo rm -rf "$WORK/venv"
+            python3 -m venv "$WORK/venv"
+            "$WORK/venv/bin/python" -m pip install --upgrade pip
+            "$WORK/venv/bin/pip" install -r "$WORK/requirements.txt"
+
+            # Cleanup tmp clone.
+            rm -rf "$TMPCLONE"
 
             sudo systemctl restart indaba-app
             sleep 6
@@ -107,6 +99,8 @@ jobs:
               echo "::error::indaba-app service did not become active"
               echo "--- systemctl status ---"
               sudo systemctl status indaba-app --no-pager || true
+              echo "--- ExecStart from unit file ---"
+              sudo systemctl cat indaba-app | grep -E "ExecStart|WorkingDirectory|User" || true
               echo "--- last 80 journal lines ---"
               sudo journalctl -u indaba-app -n 80 --no-pager || true
               exit 1
