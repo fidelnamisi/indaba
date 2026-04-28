@@ -12,52 +12,60 @@ jobs:
           host: 13.218.60.13
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
-          script_stop: true
+          script_stop: false
           command_timeout: 10m
           script: |
+            # Capture the entire deploy script's stdout+stderr to a log file
+            # on EC2 so the smoke-proverb workflow can read it even when the
+            # deploy fails. Without this, failures inside appleboy/ssh-action
+            # are invisible to anyone without GitHub Actions log access.
+            exec > >(tee /tmp/last-deploy.log) 2>&1
+            echo "===== DEPLOY START $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
             set -eux
-            cd /opt/indaba-app
 
-            # Ensure the working tree is owned by ubuntu so git can always
-            # rewrite files. Past root-owned files (e.g. from initial scp
-            # bootstrap) are the most likely cause of `git checkout`
-            # failing silently and aborting the deploy.
-            sudo chown -R ubuntu:ubuntu /opt/indaba-app
+            WORK=/opt/indaba-app
+            STAGE=/opt/indaba-app.stage
+            BACKUP=/opt/indaba-app.previous
 
-            # Bulletproof git sync — end with HEAD on `main` pointing at
-            # origin/main, regardless of any prior state (unborn branch,
-            # detached HEAD, missing/corrupt .git, drifted working tree).
-            # Uses plumbing commands (update-ref / symbolic-ref) instead of
-            # porcelain `git checkout`, which fails on unborn branches.
-            if [ ! -d ".git" ] || ! git rev-parse --git-dir >/dev/null 2>&1; then
-              echo "[deploy] Rebuilding .git from scratch..."
-              rm -rf .git
-              git init -q
-              git remote add origin https://github.com/fidelnamisi/indaba.git
+            # Always build the new release in a sibling dir from a fresh
+            # clone. Avoids every broken-git-state failure mode (unborn
+            # branch, root-owned files, drifted working tree, missing .git)
+            # that has plagued past deploys.
+            sudo rm -rf "$STAGE"
+            sudo git clone --depth=1 --branch main \
+              https://github.com/fidelnamisi/indaba.git "$STAGE"
+            sudo chown -R ubuntu:ubuntu "$STAGE"
+
+            # Preserve runtime state from current deploy:
+            # - data/ holds bot-written proverbs, pcloud_token.json, etc.
+            # - venv/ avoids re-running pip install on every deploy.
+            if [ -d "$WORK/data" ]; then
+              cp -a "$WORK/data" "$STAGE/data"
+            fi
+            if [ -d "$WORK/venv" ]; then
+              mv "$WORK/venv" "$STAGE/venv"
             else
-              git remote set-url origin https://github.com/fidelnamisi/indaba.git
+              python3 -m venv "$STAGE/venv"
             fi
-            git fetch --depth=1 origin main
-            git update-ref refs/heads/main FETCH_HEAD
-            git symbolic-ref HEAD refs/heads/main
-            git reset --hard refs/heads/main
-            # Purge untracked drift; venv/ and data/ are gitignored so survive.
-            git clean -fd
 
-            # Create venv if missing so pip install doesn't silently go global.
-            if [ ! -d "venv" ]; then
-              echo "[deploy] Creating venv..."
-              python3 -m venv venv
-            fi
-            source venv/bin/activate
-            python -m pip install --upgrade pip
-            pip install -r requirements.txt
+            # Sync python deps inside the staged venv before swapping.
+            "$STAGE/venv/bin/python" -m pip install --upgrade pip
+            "$STAGE/venv/bin/pip" install -r "$STAGE/requirements.txt"
 
-            # Stop any stale processes / port holders before systemd restart.
+            # Stop the running service before swapping directories.
+            sudo systemctl stop indaba-app || true
             sudo pkill -9 -f "python.*app.py" || true
             sudo lsof -ti :5050 | xargs -r sudo kill -9 || true
             sudo lsof -ti :5051 | xargs -r sudo kill -9 || true
             sleep 2
+
+            # Atomic-ish swap: keep the previous release as a rollback point.
+            sudo rm -rf "$BACKUP"
+            if [ -d "$WORK" ]; then
+              sudo mv "$WORK" "$BACKUP"
+            fi
+            sudo mv "$STAGE" "$WORK"
+            sudo chown -R ubuntu:ubuntu "$WORK"
 
             sudo systemctl restart indaba-app
             sleep 6
@@ -81,3 +89,4 @@ jobs:
               exit 1
             fi
             echo "Health check passed — app is serving"
+            echo "===== DEPLOY OK $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="

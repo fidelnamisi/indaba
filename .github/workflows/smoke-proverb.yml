@@ -34,6 +34,11 @@ jobs:
             echo "- Commit: ${{ github.sha }}"
             echo "- Time (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo
+            echo "### Last deploy script log (/tmp/last-deploy.log on EC2)"
+            echo '```'
+            $SSH "tail -120 /tmp/last-deploy.log 2>&1 || echo '(log file not present)'"
+            echo '```'
+            echo
             echo "### Service status"
             echo '```'
             $SSH "sudo systemctl is-active indaba-app; cd /opt/indaba-app && git log -1 --oneline"
