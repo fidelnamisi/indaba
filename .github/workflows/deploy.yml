@@ -21,9 +21,9 @@ jobs:
           # than `envs:` which has not been passing through in practice).
           script: |
             # Capture stdout+stderr to a log file the smoke-proverb
-            # workflow can read — the only way to see deploy failures
-            # without GitHub Actions log access.
-            exec > >(tee /tmp/last-deploy.log) 2>&1
+            # workflow can read. stdbuf -oL forces line buffering so
+            # the log is complete even if the script dies mid-stream.
+            exec > >(stdbuf -oL tee /tmp/last-deploy.log) 2>&1
             echo "===== DEPLOY START $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
             set -eu
 
@@ -54,8 +54,17 @@ jobs:
             unset TOKEN
             set -x
 
-            # Stop the running service before mutating /opt/indaba-app.
+            # Mask the unit BEFORE stopping it. Without this, the
+            # unit's `Restart=always` directive keeps trying to start
+            # the service every ~10s during the deploy, racing with
+            # our file changes (restart counter was at 142 before
+            # the prior deploy attempt because every prior failure
+            # left systemd in an auto-restart loop). Mask creates a
+            # /dev/null symlink in /etc/systemd/system that fully
+            # blocks any start request.
+            sudo systemctl mask indaba-app || true
             sudo systemctl stop indaba-app || true
+            sudo systemctl reset-failed indaba-app || true
             sudo pkill -9 -f "python.*app.py" || true
             sudo lsof -ti :5050 | xargs -r sudo kill -9 || true
             sudo lsof -ti :5051 | xargs -r sudo kill -9 || true
@@ -91,7 +100,17 @@ jobs:
             # Cleanup tmp clone.
             rm -rf "$TMPCLONE"
 
-            sudo systemctl restart indaba-app
+            # Verify the venv python that systemd will exec actually
+            # exists — we have been silently shipping broken venvs.
+            ls -la "$WORK/venv/bin/python" || {
+              echo "::error::venv python missing after build"
+              exit 1
+            }
+
+            # Unmask and start the service.
+            sudo systemctl unmask indaba-app
+            sudo systemctl reset-failed indaba-app || true
+            sudo systemctl start indaba-app
             sleep 6
 
             # Loud diagnostics if the service didn't come up.
