@@ -1,0 +1,63 @@
+name: Smoke proverb generate
+on:
+  workflow_run:
+    workflows: ["Deploy to EC2"]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2.pem
+          chmod 600 ~/.ssh/ec2.pem
+          ssh-keyscan -H 13.218.60.13 >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Run diagnostic on EC2 and capture output
+        id: smoke
+        run: |
+          set +e
+          SSH="ssh -i ~/.ssh/ec2.pem -o StrictHostKeyChecking=no -o ConnectTimeout=15 ubuntu@13.218.60.13"
+          {
+            echo "## Smoke test"
+            echo "- Run: ${{ github.run_id }}"
+            echo "- Commit: ${{ github.sha }}"
+            echo "- Time (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            echo "### Service status"
+            echo '```'
+            $SSH "sudo systemctl is-active indaba-app; cd /opt/indaba-app && git log -1 --oneline"
+            echo '```'
+            echo
+            echo "### GET /api/promo/proverbs/_debug_env"
+            echo '```json'
+            $SSH "curl -s --max-time 15 http://localhost:5050/api/promo/proverbs/_debug_env || echo 'curl failed'"
+            echo
+            echo '```'
+            echo
+            echo "### POST /api/promo/broadcast_post/generate (empty body)"
+            echo '```'
+            $SSH "curl -s -w '\nHTTP_STATUS=%{http_code}\n' --max-time 120 -X POST -H 'Content-Type: application/json' -d '{}' http://localhost:5050/api/promo/broadcast_post/generate || echo 'curl failed'"
+            echo '```'
+            echo
+            echo "### Last 40 journal lines for indaba-app"
+            echo '```'
+            $SSH "sudo journalctl -u indaba-app -n 40 --no-pager 2>&1 | tail -50"
+            echo '```'
+          } > smoke-output.md 2>&1
+          echo "--- captured ---"
+          cat smoke-output.md
+
+      - name: Post results to tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue comment 1 --repo fidelnamisi/indaba --body-file smoke-output.md
