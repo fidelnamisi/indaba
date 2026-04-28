@@ -21,5 +21,18 @@
       "Bash(cp *)",
       "Bash(mv *)"
     ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /home/user/indaba && git fetch origin main -q 2>/dev/null; AHEAD=$(git rev-list origin/main..main --count 2>/dev/null || echo 0); if [ \"$AHEAD\" -gt 0 ]; then git push origin main -q && echo '[auto-deploy] Pushed main to origin — EC2 deploy triggered.'; fi"
+          }
+        ]
+      }
+    ]
   }
 }

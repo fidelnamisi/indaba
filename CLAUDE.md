@@ -10,6 +10,17 @@
 > Never perform publishing operations or pipeline data edits here unless
 > Fidel explicitly asks you to as part of a development task.
 
+## 🚀 Deployment Rule — Read Every Session
+
+**Always run `/deploy` when a coding task is complete.**
+
+Pushing to `main` triggers the GitHub Actions workflow (`deploy.yml`) which
+SSHs into EC2 and restarts the live app automatically. No user action needed.
+
+- `/deploy` merges the current branch into `main` and pushes.
+- The Stop hook also auto-pushes `main` if it has unpushed commits as a safety net.
+- Never leave a session with completed work sitting on a `claude/*` branch.
+
 ---
 
 ## ⚠️ Read This First — Every Session
