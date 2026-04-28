@@ -3,3 +3,4 @@ fal-client
 Pillow
 boto3
 anthropic
+requests

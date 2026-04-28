@@ -1,153 +1,282 @@
 """
-Audio routes — browse local pCloud files and upload to S3 for streaming.
-pCloud is mounted locally so no API calls are needed; files are on disk.
+Audio routes — browse pCloud via API and link files directly to modules.
+No local pCloud mount or S3 upload needed; files are linked by pCloud file ID.
 """
 import os
-import re
-import threading
+import secrets
 
-import boto3
+import requests
 from flask import Blueprint, jsonify, request
 
 from utils.json_store import read_json, write_json
-from services.chapter_html_template import get_series_config
 
 bp = Blueprint('audio', __name__)
 
-S3_BUCKET = 'realmsandroads-audio-664112763115'
-S3_REGION = 'us-east-1'
-S3_BASE_URL = f'https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com'
+PCLOUD_CLIENT_ID     = '7gwpWvnAYR0'
+PCLOUD_CLIENT_SECRET = 'CHaPsGVcTgVIm6FN4f0MVJA9Iuk7'
+PCLOUD_TOKEN_FILE    = 'pcloud_token.json'
 
-# Upload progress store: { job_id: {state, progress, url, error} }
-_upload_jobs = {}
-
-
-def _mp3s_in_folder(folder):
-    """Return list of .mp3 files in folder, sorted by name."""
-    if not folder or not os.path.isdir(folder):
-        return []
-    files = [f for f in os.listdir(folder) if f.lower().endswith('.mp3')]
-    files.sort()
-    return files
+# In-memory state nonces for OAuth
+_oauth_states = {}
 
 
-def _resolve_series(work_id: str, series_config: dict):
-    """Return (key, config) by key or by name field (case-insensitive)."""
-    if work_id in series_config:
-        return work_id, series_config[work_id]
-    needle = work_id.lower().strip()
-    for k, v in series_config.items():
-        if v.get('name', '').lower().strip() == needle:
-            return k, v
-    return None, None
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _load_token():
+    """Return (access_token, hostname) or (None, None)."""
+    data = read_json(PCLOUD_TOKEN_FILE) or {}
+    return data.get('access_token'), data.get('hostname', 'api.pcloud.com')
 
 
-@bp.route('/api/audio/browse/<path:work_id>', methods=['GET'])
-def browse_audio(work_id):
-    """List MP3 files in the pCloud folder for a given work."""
-    series_config = get_series_config()
-    _, series = _resolve_series(work_id, series_config)
-    if series is None:
-        return jsonify({'error': f'Unknown work: {work_id}'}), 404
-
-    folder = series.get('pcloud_folder', '')
-    files  = _mp3s_in_folder(folder)
-
-    return jsonify({
-        'work_id': work_id,
-        'folder':  folder,
-        'files':   files,
-    })
+def _save_token(access_token, hostname):
+    write_json(PCLOUD_TOKEN_FILE, {'access_token': access_token, 'hostname': hostname})
 
 
-@bp.route('/api/audio/upload', methods=['POST'])
-def upload_audio():
+def _pcloud_get(endpoint, params, token=None, hostname=None):
+    """Authenticated GET to pCloud API. Raises on HTTP error."""
+    if token is None:
+        token, hostname = _load_token()
+    if not hostname:
+        hostname = 'api.pcloud.com'
+    url = f'https://{hostname}/{endpoint}'
+    params['access_token'] = token
+    resp = requests.get(url, params=params, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
+
+# ---------------------------------------------------------------------------
+# OAuth
+# ---------------------------------------------------------------------------
+
+@bp.route('/api/audio/pcloud/status', methods=['GET'])
+def pcloud_status():
+    """Check whether pCloud is connected (valid token)."""
+    token, hostname = _load_token()
+    if not token:
+        return jsonify({'connected': False})
+    try:
+        info = _pcloud_get('userinfo', {}, token=token, hostname=hostname)
+        if info.get('result', 0) != 0:
+            return jsonify({'connected': False, 'error': info.get('error', 'Token invalid')})
+        return jsonify({'connected': True, 'email': info.get('email', ''), 'hostname': hostname})
+    except Exception as e:
+        return jsonify({'connected': False, 'error': str(e)})
+
+
+@bp.route('/api/audio/pcloud/auth', methods=['GET'])
+def pcloud_auth():
+    """Return an OAuth authorization URL for the user to visit."""
+    redirect_base = os.environ.get('PCLOUD_REDIRECT_BASE', 'http://localhost:5050')
+    redirect_uri  = f'{redirect_base}/api/audio/pcloud/callback'
+    state = secrets.token_hex(16)
+    _oauth_states[state] = True
+    auth_url = (
+        'https://my.pcloud.com/oauth2/authorize'
+        f'?client_id={PCLOUD_CLIENT_ID}'
+        f'&response_type=code'
+        f'&redirect_uri={requests.utils.quote(redirect_uri, safe="")}'
+        f'&state={state}'
+    )
+    return jsonify({'auth_url': auth_url, 'redirect_uri': redirect_uri})
+
+
+@bp.route('/api/audio/pcloud/callback', methods=['GET'])
+def pcloud_callback():
+    """Handle OAuth redirect from pCloud, exchange code for token."""
+    code  = request.args.get('code', '')
+    state = request.args.get('state', '')
+    if state not in _oauth_states:
+        return '<h2>Error: Invalid or expired state. Please try again from Indaba.</h2>', 400
+    del _oauth_states[state]
+
+    redirect_base = os.environ.get('PCLOUD_REDIRECT_BASE', 'http://localhost:5050')
+    redirect_uri  = f'{redirect_base}/api/audio/pcloud/callback'
+    try:
+        resp = requests.get(
+            'https://api.pcloud.com/oauth2_token',
+            params={
+                'client_id':     PCLOUD_CLIENT_ID,
+                'client_secret': PCLOUD_CLIENT_SECRET,
+                'code':          code,
+                'redirect_uri':  redirect_uri,
+            },
+            timeout=15,
+        )
+        data = resp.json()
+        if data.get('result', 0) != 0 or 'access_token' not in data:
+            return f'<h2>pCloud OAuth failed: {data.get("error", "Unknown error")}</h2>', 400
+        hostname = data.get('hostname', 'api.pcloud.com')
+        _save_token(data['access_token'], hostname)
+        return (
+            '<html><body style="font-family:sans-serif;text-align:center;padding:40px;">'
+            '<h2 style="color:#27ae60">pCloud connected successfully!</h2>'
+            '<p>You can close this tab and return to Indaba.</p>'
+            '<script>setTimeout(()=>window.close(),2000);</script>'
+            '</body></html>'
+        )
+    except Exception as e:
+        return f'<h2>Error connecting pCloud: {e}</h2>', 500
+
+
+# ---------------------------------------------------------------------------
+# Browse
+# ---------------------------------------------------------------------------
+
+@bp.route('/api/audio/pcloud/browse', methods=['GET'])
+def pcloud_browse():
     """
-    Upload a local pCloud MP3 to S3 and save the URL to the module.
-    Body: { work_id, filename, module_id, chapter_number }
-    Spawns a background thread; poll /api/audio/upload-status/<job_id> for progress.
+    List folders and MP3 files in a pCloud folder.
+    Query params: path (default '/') or folder_id.
     """
-    data           = request.get_json() or {}
-    work_id        = data.get('work_id', '').strip()
-    filename       = data.get('filename', '').strip()
-    module_id      = data.get('module_id', '').strip()
-    chapter_number = data.get('chapter_number')
+    token, hostname = _load_token()
+    if not token:
+        return jsonify({'error': 'pCloud not connected', 'needs_auth': True}), 401
 
-    if not work_id or not filename or not module_id:
-        return jsonify({'error': 'work_id, filename, and module_id are required'}), 400
+    path      = request.args.get('path', '/')
+    folder_id = request.args.get('folder_id')
 
-    series_config = get_series_config()
-    _, series = _resolve_series(work_id, series_config)
-    if series is None:
-        return jsonify({'error': f'Unknown work: {work_id}'}), 404
+    try:
+        params = {}
+        if folder_id:
+            params['folderid'] = folder_id
+        else:
+            params['path'] = path
 
-    folder = series.get('pcloud_folder', '')
-    if not folder or not os.path.isdir(folder):
-        return jsonify({'error': f'pCloud folder not found: {folder}'}), 404
+        data = _pcloud_get('listfolder', params, token=token, hostname=hostname)
+        if data.get('result', 0) != 0:
+            return jsonify({'error': data.get('error', 'Browse failed')}), 400
 
-    local_path = os.path.join(folder, filename)
-    if not os.path.isfile(local_path):
-        return jsonify({'error': f'File not found: {filename}'}), 404
+        meta     = data.get('metadata', {})
+        contents = meta.get('contents', [])
 
-    # Canonical S3 key: series-slug/chapter-N.mp3
-    s3_prefix = series.get('s3_prefix', series['slug'])
-    n         = chapter_number or _guess_chapter_number(filename)
-    s3_key    = f"{s3_prefix}/chapter-{n}.mp3" if n else f"{s3_prefix}/{filename}"
-    s3_url    = f"{S3_BASE_URL}/{s3_key}"
+        folders = [
+            {
+                'name':      item['name'],
+                'folder_id': item['folderid'],
+                'path':      item.get('path', ''),
+            }
+            for item in contents if item.get('isfolder')
+        ]
+        files = [
+            {
+                'name':    item['name'],
+                'file_id': item['fileid'],
+                'size':    item.get('size', 0),
+            }
+            for item in contents
+            if not item.get('isfolder') and item['name'].lower().endswith('.mp3')
+        ]
 
-    import uuid
-    job_id = str(uuid.uuid4())[:8]
-    _upload_jobs[job_id] = {'state': 'uploading', 'progress': 0, 'url': None, 'error': None}
-
-    def _run():
-        try:
-            s3 = boto3.client('s3', region_name=S3_REGION)
-            file_size = os.path.getsize(local_path)
-
-            def _progress(bytes_transferred):
-                pct = int(bytes_transferred / file_size * 100) if file_size else 0
-                _upload_jobs[job_id]['progress'] = pct
-
-            s3.upload_file(
-                local_path, S3_BUCKET, s3_key,
-                ExtraArgs={'ContentType': 'audio/mpeg'},
-                Callback=_progress,
-            )
-
-            # Save S3 URL to pipeline entry
-            pipeline = read_json('content_pipeline.json') or []
-            for entry in pipeline:
-                if entry['id'] == module_id:
-                    entry.setdefault('assets', {})['audio'] = s3_url
-                    ps = entry.setdefault('producing_status', {})
-                    sa = ps.setdefault('supporting_assets', {})
-                    sa['audio'] = 'done'
-                    break
-            write_json('content_pipeline.json', pipeline)
-
-            _upload_jobs[job_id]['state']    = 'done'
-            _upload_jobs[job_id]['progress'] = 100
-            _upload_jobs[job_id]['url']      = s3_url
-
-        except Exception as e:
-            _upload_jobs[job_id]['state'] = 'error'
-            _upload_jobs[job_id]['error'] = str(e)
-
-    threading.Thread(target=_run, daemon=True).start()
-    return jsonify({'job_id': job_id, 'ok': True, 's3_key': s3_key, 's3_url': s3_url})
+        return jsonify({
+            'path':      meta.get('path', path),
+            'name':      meta.get('name', ''),
+            'folder_id': meta.get('folderid'),
+            'folders':   folders,
+            'files':     files,
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
-@bp.route('/api/audio/upload-status/<job_id>', methods=['GET'])
-def upload_status(job_id):
-    job = _upload_jobs.get(job_id)
-    if not job:
-        return jsonify({'error': 'Job not found'}), 404
-    return jsonify(job)
+# ---------------------------------------------------------------------------
+# Link / Stream / Unlink
+# ---------------------------------------------------------------------------
+
+@bp.route('/api/audio/pcloud/link', methods=['POST'])
+def pcloud_link():
+    """
+    Link a pCloud file to a module.
+    Body: { module_id, file_id, filename }
+    Fetches an initial stream URL (valid ~24h) and stores the reference.
+    """
+    token, hostname = _load_token()
+    if not token:
+        return jsonify({'error': 'pCloud not connected', 'needs_auth': True}), 401
+
+    body      = request.get_json() or {}
+    module_id = body.get('module_id', '').strip()
+    file_id   = body.get('file_id')
+    filename  = body.get('filename', '').strip()
+
+    if not module_id or not file_id:
+        return jsonify({'error': 'module_id and file_id are required'}), 400
+
+    try:
+        link_data = _pcloud_get(
+            'getfilelink',
+            {'fileid': file_id, 'forcedownload': 0},
+            token=token, hostname=hostname,
+        )
+        if link_data.get('result', 0) != 0:
+            return jsonify({'error': link_data.get('error', 'Failed to get link')}), 400
+
+        hosts      = link_data.get('hosts', [])
+        path_      = link_data.get('path', '')
+        stream_url = f'https://{hosts[0]}{path_}' if hosts else ''
+
+        pipeline = read_json('content_pipeline.json') or []
+        for entry in pipeline:
+            if entry['id'] == module_id:
+                entry.setdefault('assets', {})['audio'] = {
+                    'type':     'pcloud',
+                    'file_id':  file_id,
+                    'filename': filename,
+                    'hostname': hostname,
+                    'url':      stream_url,
+                }
+                ps = entry.setdefault('producing_status', {})
+                sa = ps.setdefault('supporting_assets', {})
+                sa['audio'] = 'done'
+                break
+        write_json('content_pipeline.json', pipeline)
+
+        return jsonify({'ok': True, 'url': stream_url, 'filename': filename})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/api/audio/pcloud/stream/<module_id>', methods=['GET'])
+def pcloud_stream(module_id):
+    """Fetch a fresh streaming URL for a module's linked pCloud audio."""
+    token, hostname = _load_token()
+    if not token:
+        return jsonify({'error': 'pCloud not connected'}), 401
+
+    pipeline = read_json('content_pipeline.json') or []
+    entry    = next((e for e in pipeline if e['id'] == module_id), None)
+    if not entry:
+        return jsonify({'error': 'Module not found'}), 404
+
+    audio = entry.get('assets', {}).get('audio')
+    if not audio or not isinstance(audio, dict) or audio.get('type') != 'pcloud':
+        return jsonify({'error': 'No pCloud audio linked'}), 404
+
+    file_id       = audio.get('file_id')
+    file_hostname = audio.get('hostname', hostname)
+
+    try:
+        link_data = _pcloud_get(
+            'getfilelink',
+            {'fileid': file_id, 'forcedownload': 0},
+            token=token, hostname=file_hostname,
+        )
+        if link_data.get('result', 0) != 0:
+            return jsonify({'error': link_data.get('error', 'Failed to get link')}), 400
+
+        hosts = link_data.get('hosts', [])
+        path_ = link_data.get('path', '')
+        url   = f'https://{hosts[0]}{path_}' if hosts else ''
+        return jsonify({'url': url, 'filename': audio.get('filename', '')})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @bp.route('/api/audio/unlink/<module_id>', methods=['POST'])
 def unlink_audio(module_id):
-    """Remove the audio S3 URL from a module (does NOT delete from S3)."""
+    """Remove audio link from a module."""
     pipeline = read_json('content_pipeline.json') or []
     for entry in pipeline:
         if entry['id'] == module_id:
@@ -158,14 +287,3 @@ def unlink_audio(module_id):
             break
     write_json('content_pipeline.json', pipeline)
     return jsonify({'ok': True})
-
-
-def _guess_chapter_number(filename):
-    """Extract chapter number from filename heuristically."""
-    m = re.search(r'ch\s*(\d+)', filename, re.IGNORECASE)
-    if m:
-        return int(m.group(1))
-    m = re.search(r'chapter[-_\s]*(\d+)', filename, re.IGNORECASE)
-    if m:
-        return int(m.group(1))
-    return None

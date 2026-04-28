@@ -898,11 +898,12 @@ function renderProducingPanel(m) {
     const done    = val === 'done';
     const label   = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
     const dotClass = done ? 'dot-done' : 'dot-optional';
+    const actionLabel = done ? 'View' : (key === 'audio' ? 'Link Audio' : 'Generate');
     return `
       <div class="module-asset-row">
         <div class="module-asset-dot ${dotClass}"></div>
         <span class="module-asset-name">${label}</span>
-        <button class="module-asset-action" onclick="viewModuleAsset('${m.id}', '${key}')">${done ? 'View' : 'Generate'}</button>
+        <button class="module-asset-action" onclick="viewModuleAsset('${m.id}', '${key}')">${actionLabel}</button>
       </div>`;
   }).join('');
 
@@ -1238,40 +1239,60 @@ async function viewModuleAsset(moduleId, assetKey) {
     return;
   }
 
-  // Audio asset: pCloud browser + S3 uploader
+  // Audio asset: pCloud browser + direct link
   if (assetKey === 'audio') {
-    // assets.audio may be a plain S3 URL string, or a legacy object {s3_url,...}
     const _audioRaw = assets['audio'];
-    const s3Url = typeof _audioRaw === 'string' ? _audioRaw
-                : (_audioRaw && typeof _audioRaw === 'object' ? (_audioRaw.s3_url || '') : '');
-    const workId = m.book || '';
+    const isPCloud  = _audioRaw && typeof _audioRaw === 'object' && _audioRaw.type === 'pcloud';
+    const legacyUrl = typeof _audioRaw === 'string' ? _audioRaw : null;
+    const linkedFilename = isPCloud ? (_audioRaw.filename || 'Linked file') : null;
+
     mc.innerHTML = `
-      <div class="modal-title">Audio</div>
+      <div class="modal-title">Link Audio</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">${m.chapter} · ${workTitle}</div>
-      ${s3Url ? `
-        <div style="margin-bottom:14px;padding:10px 12px;background:var(--bg2);border-radius:6px;border:1px solid var(--border);">
-          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:6px;">Linked Audio (S3)</div>
-          <audio controls style="width:100%;margin-bottom:6px;">
-            <source src="${escHtml(s3Url)}" type="audio/mpeg">
-          </audio>
-          <div style="font-size:11px;color:var(--muted);word-break:break-all;">${escHtml(s3Url)}</div>
-        </div>` : `
-        <div style="margin-bottom:14px;padding:10px 12px;background:var(--bg2);border-radius:6px;border:1px solid var(--border);color:var(--muted);font-size:13px;">
-          No audio linked yet.
-        </div>`}
+
+      <div id="audio-current" style="margin-bottom:14px;">
+        ${isPCloud ? `
+          <div style="padding:10px 12px;background:var(--bg2);border-radius:6px;border:1px solid var(--border);">
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:6px;">Linked Audio (pCloud)</div>
+            <div id="audio-player-wrap" style="color:var(--muted);font-size:13px;">Loading player…</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:4px;">${escHtml(linkedFilename)}</div>
+          </div>` :
+        legacyUrl ? `
+          <div style="padding:10px 12px;background:var(--bg2);border-radius:6px;border:1px solid var(--border);">
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:6px;">Linked Audio</div>
+            <audio controls style="width:100%;margin-bottom:6px;"><source src="${escHtml(legacyUrl)}" type="audio/mpeg"></audio>
+            <div style="font-size:11px;color:var(--muted);word-break:break-all;">${escHtml(legacyUrl)}</div>
+          </div>` : `
+          <div style="padding:10px 12px;background:var(--bg2);border-radius:6px;border:1px solid var(--border);color:var(--muted);font-size:13px;">
+            No audio linked yet.
+          </div>`}
+      </div>
+
       <div style="margin-bottom:12px;">
-        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:8px;">Select from pCloud</div>
-        <div id="audio-file-list" style="font-size:13px;color:var(--muted);">
-          <button class="btn-secondary" style="font-size:12px;" onclick="loadAudioFileList('${workId}','${moduleId}',${m.chapter_number||'null'})">Browse pCloud Folder</button>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:6px;">
+          Browse pCloud
+          <span id="audio-pcloud-path-label" style="font-weight:400;text-transform:none;letter-spacing:0;margin-left:8px;color:var(--fg);font-size:11px;">/</span>
+        </div>
+        <div id="audio-file-list" style="font-size:13px;color:var(--muted);max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px 8px;">
+          <span>Loading…</span>
         </div>
       </div>
-      <div id="audio-upload-status" style="display:none;margin-bottom:10px;font-size:13px;padding:8px 12px;border-radius:6px;background:var(--bg2);"></div>
+
+      <div id="audio-link-status" style="display:none;margin-bottom:10px;font-size:13px;padding:8px 12px;border-radius:6px;background:var(--bg2);"></div>
+
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
         <button class="btn-secondary" onclick="closeModal()">Close</button>
-        ${s3Url ? `<button class="btn-secondary" style="color:var(--danger);border-color:var(--danger);"
-                onclick="unlinkAudio('${moduleId}')">Unlink Audio</button>` : ''}
+        ${isPCloud || legacyUrl ? `
+          <button class="btn-secondary" style="color:var(--danger);border-color:var(--danger);"
+                  onclick="unlinkAudio('${moduleId}')">Unlink Audio</button>` : ''}
       </div>`;
     showModal();
+
+    // Load fresh player if pCloud audio is linked
+    if (isPCloud) _loadPCloudPlayer(moduleId);
+
+    // Auto-browse pCloud root
+    loadPCloudFolder('/', moduleId);
     return;
   }
 
@@ -1343,78 +1364,124 @@ async function generateHeaderImage(moduleId) {
   }
 }
 
-async function loadAudioFileList(workId, moduleId, chapterNumber) {
-  const container = document.getElementById('audio-file-list');
+async function _loadPCloudPlayer(moduleId) {
+  const wrap = document.getElementById('audio-player-wrap');
+  if (!wrap) return;
+  try {
+    const data = await GET(`/api/audio/pcloud/stream/${moduleId}`);
+    if (data.url) {
+      wrap.innerHTML = `<audio controls style="width:100%;"><source src="${escHtml(data.url)}" type="audio/mpeg"></audio>`;
+    } else {
+      wrap.textContent = data.error || 'Could not load player.';
+    }
+  } catch (e) {
+    wrap.textContent = 'Could not load player: ' + e.message;
+  }
+}
+
+async function loadPCloudFolder(path, moduleId, folderId) {
+  const container  = document.getElementById('audio-file-list');
+  const pathLabel  = document.getElementById('audio-pcloud-path-label');
   if (!container) return;
   container.innerHTML = '<span style="color:var(--muted);">Loading…</span>';
+
   try {
-    const data = await GET(`/api/audio/browse/${encodeURIComponent(workId)}`);
-    if (!data.files || !data.files.length) {
-      container.innerHTML = `<span style="color:var(--muted);">No MP3 files found in pCloud folder.</span><div style="font-size:11px;color:var(--muted);margin-top:4px;">${escHtml(data.folder)}</div>`;
+    const params = folderId
+      ? `folder_id=${encodeURIComponent(folderId)}`
+      : `path=${encodeURIComponent(path)}`;
+    const data = await GET(`/api/audio/pcloud/browse?${params}`);
+
+    if (data.needs_auth) {
+      // Show connect-to-pCloud UI
+      const authData = await GET('/api/audio/pcloud/auth');
+      container.innerHTML = `
+        <div style="padding:8px 0;">
+          <p style="margin:0 0 10px;color:var(--fg);font-size:13px;">pCloud is not connected yet.</p>
+          <a href="${escHtml(authData.auth_url)}" target="_blank" class="btn-primary" style="text-decoration:none;font-size:12px;padding:6px 16px;">
+            Authorize pCloud
+          </a>
+          <button class="btn-secondary" style="margin-left:8px;font-size:12px;" onclick="loadPCloudFolder('/',  '${moduleId}')">
+            Refresh
+          </button>
+        </div>`;
       return;
     }
-    const rows = data.files.map(f => `
+
+    if (data.error) {
+      container.innerHTML = `<span style="color:var(--danger);">Error: ${escHtml(data.error)}</span>`;
+      return;
+    }
+
+    const currentPath = data.path || path;
+    if (pathLabel) pathLabel.textContent = currentPath;
+
+    const parentPath = currentPath.split('/').slice(0, -1).join('/') || '/';
+    const backRow = currentPath !== '/' ? `
+      <div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border);cursor:pointer;"
+           onclick="loadPCloudFolder('${escHtml(parentPath)}','${moduleId}')">
+        <span style="font-size:15px;">←</span>
+        <span style="font-size:13px;color:var(--muted);">.. (up)</span>
+      </div>` : '';
+
+    const folderRows = data.folders.map(f => `
+      <div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border);cursor:pointer;"
+           onclick="loadPCloudFolder('','${moduleId}',${f.folder_id})">
+        <span style="font-size:15px;">📁</span>
+        <span style="flex:1;font-size:13px;">${escHtml(f.name)}</span>
+      </div>`).join('');
+
+    const fileRows = data.files.map(f => `
       <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);">
-        <span style="flex:1;font-size:13px;">${escHtml(f)}</span>
+        <span style="font-size:15px;">🎵</span>
+        <span style="flex:1;font-size:13px;">${escHtml(f.name)}</span>
         <button class="btn-primary" style="font-size:11px;padding:4px 12px;"
-                onclick="uploadAudioToS3('${workId}','${escHtml(f).replace(/'/g,"\\'")}','${moduleId}',${chapterNumber||'null'})">
-          Upload to S3
+                onclick="linkAudioFile('${moduleId}',${f.file_id},'${escHtml(f.name).replace(/'/g,"\\'")}')">
+          Link
         </button>
       </div>`).join('');
-    container.innerHTML = `<div style="font-size:11px;color:var(--muted);margin-bottom:6px;">${escHtml(data.folder)}</div>${rows}`;
+
+    if (!folderRows && !fileRows) {
+      container.innerHTML = backRow + `<div style="color:var(--muted);padding:8px 0;font-size:13px;">No folders or MP3 files here.</div>`;
+    } else {
+      container.innerHTML = backRow + folderRows + fileRows;
+    }
   } catch (e) {
     container.innerHTML = `<span style="color:var(--danger);">Error: ${e.message}</span>`;
   }
 }
 
-async function uploadAudioToS3(workId, filename, moduleId, chapterNumber) {
-  const statusEl = document.getElementById('audio-upload-status');
-  if (statusEl) { statusEl.style.display = 'block'; statusEl.textContent = 'Starting upload…'; statusEl.style.color = 'var(--muted)'; }
-
+async function linkAudioFile(moduleId, fileId, filename) {
+  const statusEl = document.getElementById('audio-link-status');
+  if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = 'var(--muted)'; statusEl.textContent = 'Linking…'; }
   try {
-    const job = await POST('/api/audio/upload', { work_id: workId, filename, module_id: moduleId, chapter_number: chapterNumber });
-    if (!job.ok) throw new Error(job.error || 'Upload failed');
-
-    if (statusEl) statusEl.textContent = `Uploading to S3… 0%`;
-
-    // Poll for progress
-    const poll = setInterval(async () => {
-      try {
-        const s = await GET(`/api/audio/upload-status/${job.job_id}`);
-        if (s.state === 'uploading') {
-          if (statusEl) statusEl.textContent = `Uploading to S3… ${s.progress}%`;
-        } else if (s.state === 'done') {
-          clearInterval(poll);
-          if (statusEl) { statusEl.style.color = 'var(--success)'; statusEl.textContent = `✓ Uploaded — ${s.url}`; }
-          // Update in-memory state and refresh modal + producing panel dot
-          if (moduleDetailState.module) {
-            moduleDetailState.module.assets = moduleDetailState.module.assets || {};
-            moduleDetailState.module.assets.audio = s.url;
-            if (moduleDetailState.module.producing_status?.supporting_assets)
-              moduleDetailState.module.producing_status.supporting_assets.audio = 'done';
-            // Re-render the panel so the green dot appears immediately
-            const panel = document.getElementById('module-detail-panel');
-            if (panel) panel.innerHTML = renderModuleDetailPanel(moduleDetailState.module, moduleDetailState.activeStage);
-          }
-          setTimeout(() => viewModuleAsset(moduleId, 'audio'), 1200);
-        } else if (s.state === 'error') {
-          clearInterval(poll);
-          if (statusEl) { statusEl.style.color = 'var(--danger)'; statusEl.textContent = `Upload failed: ${s.error}`; }
-        }
-      } catch (_) {}
-    }, 1500);
-
+    const res = await POST('/api/audio/pcloud/link', { module_id: moduleId, file_id: fileId, filename });
+    if (!res.ok) throw new Error(res.error || 'Link failed');
+    if (statusEl) { statusEl.style.color = 'var(--success)'; statusEl.textContent = `✓ Linked: ${filename}`; }
+    // Update in-memory state
+    if (moduleDetailState.module) {
+      moduleDetailState.module.assets = moduleDetailState.module.assets || {};
+      moduleDetailState.module.assets.audio = { type: 'pcloud', file_id: fileId, filename };
+      if (moduleDetailState.module.producing_status?.supporting_assets)
+        moduleDetailState.module.producing_status.supporting_assets.audio = 'done';
+      const panel = document.getElementById('module-detail-panel');
+      if (panel) panel.innerHTML = renderModuleDetailPanel(moduleDetailState.module, moduleDetailState.activeStage);
+    }
+    setTimeout(() => viewModuleAsset(moduleId, 'audio'), 800);
   } catch (e) {
     if (statusEl) { statusEl.style.color = 'var(--danger)'; statusEl.textContent = `Error: ${e.message}`; }
   }
 }
 
 async function unlinkAudio(moduleId) {
-  if (!confirm('Unlink audio from this chapter? The S3 file will NOT be deleted.')) return;
+  if (!confirm('Unlink audio from this chapter?')) return;
   try {
     await POST(`/api/audio/unlink/${moduleId}`, {});
     if (moduleDetailState.module?.assets) delete moduleDetailState.module.assets.audio;
+    if (moduleDetailState.module?.producing_status?.supporting_assets)
+      moduleDetailState.module.producing_status.supporting_assets.audio = 'missing';
     toast('Audio unlinked', 'success');
+    const panel = document.getElementById('module-detail-panel');
+    if (panel) panel.innerHTML = renderModuleDetailPanel(moduleDetailState.module, moduleDetailState.activeStage);
     viewModuleAsset(moduleId, 'audio');
   } catch (e) {
     toast('Unlink failed: ' + e.message, 'error');
