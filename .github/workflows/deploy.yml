@@ -29,5 +29,8 @@ jobs:
             sudo lsof -i :5051 -S -t | xargs -r kill -9 || true
             sleep 2
             sudo systemctl restart indaba-app
-            sleep 5
+            sleep 6
             sudo systemctl is-active indaba-app
+            curl -sf http://localhost:5050/api/content-pipeline > /dev/null \
+              && echo "✓ Health check passed — app is serving" \
+              || (echo "✗ Health check FAILED — app not responding on :5050" && exit 1)
