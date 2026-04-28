@@ -10,18 +10,16 @@ jobs:
     steps:
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
-        env:
-          # Repo is private, so EC2 needs a credential to git-clone. The
-          # workflow's GITHUB_TOKEN has contents:read scope and lasts only
-          # for this workflow run, which is exactly the right lifetime.
-          GH_TOKEN_FOR_CLONE: ${{ secrets.GITHUB_TOKEN }}
         with:
           host: 13.218.60.13
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
-          envs: GH_TOKEN_FOR_CLONE
           script_stop: true
           command_timeout: 10m
+          # The token is substituted into the script string by GitHub
+          # Actions before the script is sent over SSH. Direct substitution
+          # is more reliable than `envs:` which has not been passing the
+          # env var through reliably in practice.
           script: |
             # Capture the entire deploy script's stdout+stderr to a log file
             # on EC2 so the smoke-proverb workflow can read it even when the
@@ -30,25 +28,29 @@ jobs:
             exec > >(tee /tmp/last-deploy.log) 2>&1
             echo "===== DEPLOY START $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
             set -eu
-            # Trace commands but mask the token in the URL.
-            export PS4='+ '
-            set -x
 
             WORK=/opt/indaba-app
             STAGE=/opt/indaba-app.stage
             BACKUP=/opt/indaba-app.previous
             TMPCLONE=/tmp/indaba-stage
 
-            # Clone as the ubuntu user (no sudo) into /tmp so git uses
-            # ubuntu's config, not root's. The repo is private so the
-            # request carries the workflow's GITHUB_TOKEN as a bearer.
-            # set +x around this block so the token never lands in
-            # /tmp/last-deploy.log (which the smoke workflow posts publicly).
+            # Set the token in an isolated subshell with no trace, so it
+            # never leaks into /tmp/last-deploy.log (which is posted to a
+            # public-style GitHub issue comment).
+            { TOKEN='${{ secrets.GITHUB_TOKEN }}'; } 2>/dev/null
+            echo "[diag] token present: $([ -n "$TOKEN" ] && echo yes || echo no), length: ${#TOKEN}"
+
+            set -x
+
+            # Clone as the ubuntu user (no sudo) into /tmp. The repo is
+            # private so the request carries the workflow's GITHUB_TOKEN
+            # as a bearer header.
             rm -rf "$TMPCLONE"
             { set +x; } 2>/dev/null
-            git -c http.extraHeader="Authorization: bearer $GH_TOKEN_FOR_CLONE" \
+            git -c http.extraHeader="Authorization: bearer $TOKEN" \
               clone --depth=1 --branch main \
               https://github.com/fidelnamisi/indaba.git "$TMPCLONE"
+            unset TOKEN
             set -x
 
             # Move the fresh clone into /opt and reset the remote URL so
