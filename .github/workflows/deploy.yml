@@ -30,7 +30,12 @@ jobs:
               git remote set-url origin https://github.com/fidelnamisi/indaba.git
             fi
             git fetch --depth=1 origin main
-            git reset --hard origin/main
+            # Force HEAD onto a real `main` branch pointing at fetched main.
+            # Recovers from broken states (unborn `master`, detached HEAD, etc.)
+            # where `git reset --hard origin/main` aborts the workflow before
+            # systemctl restart. -f discards any local working-tree drift.
+            git checkout -f -B main FETCH_HEAD
+            git reset --hard FETCH_HEAD
 
             # Create venv if missing so pip install doesn't silently go global.
             if [ ! -d "venv" ]; then
