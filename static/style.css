@@ -4404,7 +4404,7 @@ body.light-mode .badge-focus-set:hover {
 /* Column header row */
 .crm-col-header {
   display: grid;
-  grid-template-columns: 28px 2fr 1.2fr 1.6fr 80px 72px;
+  grid-template-columns: 28px 2fr 1.1fr 1.3fr 1.3fr 1.3fr 72px;
   padding: 8px 20px;
   border-bottom: 1px solid var(--border);
   background: var(--bg2, var(--bg-secondary));
@@ -4418,10 +4418,59 @@ body.light-mode .badge-focus-set:hover {
   color: var(--muted);
 }
 
+/* Filter header cell */
+.crm-col-filter-hd {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.crm-col-filter {
+  font-size: 10px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-secondary);
+  background: var(--bg, var(--bg-primary));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 4px;
+  cursor: pointer;
+  max-width: 110px;
+  width: 100%;
+}
+
+/* Lead type and stage pills */
+.crm-pills-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  align-items: center;
+}
+.crm-lead-type-pill {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--p1-bg, #eef2fb);
+  color: var(--p1, #2c5f8a);
+  white-space: nowrap;
+}
+.crm-stage-pill {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  background: #fef3e2;
+  color: #b07020;
+  white-space: nowrap;
+}
+
 /* Data rows */
 .crm-row {
   display: grid;
-  grid-template-columns: 28px 2fr 1.2fr 1.6fr 80px 72px;
+  grid-template-columns: 28px 2fr 1.1fr 1.3fr 1.3fr 1.3fr 72px;
   align-items: center;
   padding: 10px 20px;
   border-bottom: 1px solid var(--border);

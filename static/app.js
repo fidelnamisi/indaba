@@ -11238,6 +11238,8 @@ state.crm = state.crm || {
   selectedLead:    null,
   contactSearch:   '',
   selectedContacts: new Set(),
+  filterLeadType:  '',
+  filterStage:     '',
 };
 
 // ── Tab switching ──────────────────────────────────────────────────────────
@@ -11338,7 +11340,22 @@ function renderCRMContacts() {
           <div class="crm-col-header">
             <span><input type="checkbox" id="crm-select-all" title="Select all"
               onchange="toggleSelectAllContacts(this.checked)" style="cursor:pointer;"></span>
-            <span>Name</span><span>Phone</span><span>Email</span><span>Leads</span><span></span>
+            <span>Name</span><span>Phone</span><span>Email</span>
+            <span class="crm-col-filter-hd">
+              Lead
+              <select id="crm-filter-lead-type" class="crm-col-filter"
+                onchange="state.crm.filterLeadType=this.value;_refreshCRMTable()" title="Filter by lead type">
+                <option value="">All types</option>
+              </select>
+            </span>
+            <span class="crm-col-filter-hd">
+              Pipeline
+              <select id="crm-filter-stage" class="crm-col-filter"
+                onchange="state.crm.filterStage=this.value;_refreshCRMTable()" title="Filter by stage">
+                <option value="">All stages</option>
+              </select>
+            </span>
+            <span></span>
           </div>
           <div id="crm-table-body" class="crm-table-pane-inner"></div>
         </div>
@@ -11353,32 +11370,64 @@ function renderCRMContacts() {
   if (state.crm.selectedContactId) _renderContactDetail(state.crm.selectedContactId);
 }
 
+function _visibleContacts() {
+  const q = (state.crm.contactSearch || '').toLowerCase();
+  const filterLeadType = state.crm.filterLeadType || '';
+  const filterStage    = state.crm.filterStage    || '';
+  return state.crm.contacts.filter(c => {
+    if (q && !c.name.toLowerCase().includes(q) &&
+        !(c.phone||'').includes(q) && !(c.email||'').toLowerCase().includes(q)) return false;
+    if (filterLeadType || filterStage) {
+      const match = state.crm.leads.some(l => {
+        if (l.contact_id !== c.id || l.status !== 'open') return false;
+        if (filterLeadType && l.pipeline_id !== filterLeadType) return false;
+        if (filterStage    && l.stage       !== filterStage)    return false;
+        return true;
+      });
+      if (!match) return false;
+    }
+    return true;
+  });
+}
+
 function _refreshCRMTable() {
   const body = document.getElementById('crm-table-body');
   const countEl = document.getElementById('crm-count');
   if (!body) return;
 
-  const q = (state.crm.contactSearch || '').toLowerCase();
-  const contacts = state.crm.contacts.filter(c =>
-    !q || c.name.toLowerCase().includes(q) ||
-    (c.phone||'').includes(q) || (c.email||'').toLowerCase().includes(q)
-  );
+  _refreshCRMFilters();
 
+  const contacts = _visibleContacts();
   if (countEl) countEl.textContent = state.crm.contacts.length;
+
+  const q = (state.crm.contactSearch || '').toLowerCase();
+  const isFiltered = q || state.crm.filterLeadType || state.crm.filterStage;
 
   if (contacts.length === 0) {
     body.innerHTML = `<div style="padding:40px;text-align:center;color:var(--muted);font-size:13px;">
-      ${q ? 'No contacts match your search.' : 'No contacts yet. Add one or import a CSV.'}
+      ${isFiltered ? 'No contacts match your filters.' : 'No contacts yet. Add one or import a CSV.'}
     </div>`;
     return;
   }
 
   body.innerHTML = contacts.map(c => {
-    const openLeads = state.crm.leads.filter(l => l.contact_id === c.id && l.status === 'open').length;
+    const contactLeads = state.crm.leads.filter(l => l.contact_id === c.id && l.status === 'open');
     const initials  = _crmInitials(c.name);
     const panelSel  = state.crm.selectedContactId === c.id ? ' selected' : '';
     const chkd      = state.crm.selectedContacts.has(c.id) ? ' checked' : '';
     const bulkSel   = state.crm.selectedContacts.has(c.id) ? ' crm-row-bulk-checked' : '';
+
+    const leadTypePills = contactLeads.length
+      ? contactLeads.map(l => `<span class="crm-lead-type-pill">${esc(l.pipeline_name)}</span>`).join('')
+      : `<span class="crm-badge-none">—</span>`;
+
+    const stagePills = contactLeads.length
+      ? contactLeads.map(l => {
+          const pip = _crmPipeline(l.pipeline_id);
+          return `<span class="crm-stage-pill">${esc(_crmStageName(pip, l.stage))}</span>`;
+        }).join('')
+      : `<span class="crm-badge-none">—</span>`;
+
     return `<div class="crm-row${panelSel}${bulkSel}" onclick="openContactPanel('${c.id}')">
       <div onclick="event.stopPropagation()">
         <input type="checkbox" class="crm-bulk-cb" data-id="${c.id}"${chkd}
@@ -11392,11 +11441,8 @@ function _refreshCRMTable() {
       </div>
       <div class="crm-row-cell">${esc(c.phone||'—')}</div>
       <div class="crm-row-cell">${esc(c.email||'—')}</div>
-      <div>
-        ${openLeads
-          ? `<span class="crm-badge crm-badge-open">${openLeads} lead${openLeads>1?'s':''}</span>`
-          : `<span class="crm-badge-none">—</span>`}
-      </div>
+      <div class="crm-pills-cell">${leadTypePills}</div>
+      <div class="crm-pills-cell">${stagePills}</div>
       <div class="crm-row-actions" onclick="event.stopPropagation()">
         <button class="crm-icon-btn" title="Add lead" onclick="openAddLeadModal('${c.id}')">+</button>
         <button class="crm-icon-btn danger" title="Delete" onclick="deleteContact('${c.id}')">✕</button>
@@ -11425,11 +11471,7 @@ function toggleContactSelect(contactId, checked) {
     if (row) row.classList.toggle('crm-row-bulk-checked', cb.checked);
   });
   // Sync select-all
-  const q = (state.crm.contactSearch || '').toLowerCase();
-  const visible = state.crm.contacts.filter(c =>
-    !q || c.name.toLowerCase().includes(q) ||
-    (c.phone||'').includes(q) || (c.email||'').toLowerCase().includes(q)
-  );
+  const visible = _visibleContacts();
   const allCb = document.getElementById('crm-select-all');
   if (allCb) {
     allCb.checked = visible.length > 0 && visible.every(c => state.crm.selectedContacts.has(c.id));
@@ -11438,17 +11480,44 @@ function toggleContactSelect(contactId, checked) {
 }
 
 function toggleSelectAllContacts(checked) {
-  const q = (state.crm.contactSearch || '').toLowerCase();
-  const visible = state.crm.contacts.filter(c =>
-    !q || c.name.toLowerCase().includes(q) ||
-    (c.phone||'').includes(q) || (c.email||'').toLowerCase().includes(q)
-  );
+  const visible = _visibleContacts();
   visible.forEach(c => {
     if (checked) state.crm.selectedContacts.add(c.id);
     else state.crm.selectedContacts.delete(c.id);
   });
   _updateBulkBar();
   _refreshCRMTable();
+}
+
+function _refreshCRMFilters() {
+  const ltSel = document.getElementById('crm-filter-lead-type');
+  const stSel = document.getElementById('crm-filter-stage');
+  if (!ltSel || !stSel) return;
+
+  const openLeads = state.crm.leads.filter(l => l.status === 'open');
+
+  // Build stage name map from pipeline definitions
+  const stageNameMap = {};
+  state.crm.pipelines.forEach(p => {
+    (p.stages || []).forEach(s => { stageNameMap[s.code] = stageNameMap[s.code] || s.name; });
+  });
+
+  // Unique pipelines from open leads
+  const pipelineMap = new Map();
+  openLeads.forEach(l => { if (!pipelineMap.has(l.pipeline_id)) pipelineMap.set(l.pipeline_id, l.pipeline_name); });
+  const curLT = state.crm.filterLeadType;
+  ltSel.innerHTML = '<option value="">All types</option>' +
+    [...pipelineMap.entries()].map(([id, name]) =>
+      `<option value="${esc(id)}"${id === curLT ? ' selected' : ''}>${esc(name)}</option>`
+    ).join('');
+
+  // Unique stages from open leads
+  const stages = [...new Set(openLeads.map(l => l.stage))];
+  const curSt = state.crm.filterStage;
+  stSel.innerHTML = '<option value="">All stages</option>' +
+    stages.map(s =>
+      `<option value="${esc(s)}"${s === curSt ? ' selected' : ''}>${esc(stageNameMap[s] || s)}</option>`
+    ).join('');
 }
 
 function _updateBulkBar() {
