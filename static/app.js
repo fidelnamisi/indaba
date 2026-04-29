@@ -6125,6 +6125,7 @@ function renderPromoContacts() {
             <td>${openLeadsCount}</td>
             <td>
               <button class="btn-secondary" style="padding:4px 8px;font-size:11px;" onclick="openContactDetail('${c.id}')">View</button>
+              <button class="btn-secondary" style="padding:4px 8px;font-size:11px;" onclick="editContactModal('${c.id}')">Edit</button>
               <button class="btn-secondary" style="padding:4px 8px;font-size:11px;color:var(--p1);" onclick="confirmDeleteContact('${c.id}')">Delete</button>
             </td>
           </tr>`;
@@ -6395,6 +6396,65 @@ async function removeContactTag(contactId, tag) {
     openContactDetail(contactId);
     loadPromoContacts();
   } catch (e) { toast('Could not remove tag', 'error'); }
+}
+
+function editContactModal(contactId) {
+  const c = state.promoContacts.find(x => x.id === contactId);
+  if (!c) return;
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">Edit Contact</div>
+    <div class="form-group">
+      <label class="form-label">Name *</label>
+      <input class="form-input" id="edit-contact-name" type="text" value="${esc(c.name)}"/>
+      <div id="edit-contact-err-name" class="inline-error" style="color:var(--p1);font-size:11px;display:none;">Name is required</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Phone *</label>
+      <input class="form-input" id="edit-contact-phone" type="text" value="${esc(c.phone)}"/>
+      <div id="edit-contact-err-phone" class="inline-error" style="color:var(--p1);font-size:11px;display:none;">Valid phone required (e.g. +27821234567)</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Email</label>
+      <input class="form-input" id="edit-contact-email" type="email" value="${esc(c.email || '')}"/>
+    </div>
+    <div id="edit-contact-err-api" class="inline-error" style="color:var(--p1);font-size:11px;margin-bottom:10px;display:none;"></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="saveEditContact('${c.id}')">Save Changes</button>
+    </div>`;
+  showModal();
+}
+
+async function saveEditContact(contactId) {
+  const name  = document.getElementById('edit-contact-name').value.trim();
+  const phone = document.getElementById('edit-contact-phone').value.trim();
+  const email = document.getElementById('edit-contact-email').value.trim();
+
+  document.getElementById('edit-contact-err-name').style.display  = 'none';
+  document.getElementById('edit-contact-err-phone').style.display = 'none';
+  document.getElementById('edit-contact-err-api').style.display   = 'none';
+
+  let valid = true;
+  if (!name)  { document.getElementById('edit-contact-err-name').style.display  = 'block'; valid = false; }
+  if (!phone) { document.getElementById('edit-contact-err-phone').style.display = 'block'; valid = false; }
+  if (!valid) return;
+
+  try {
+    const res = await fetch(`/api/promo/contacts/${contactId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, phone, email })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      toast('Contact updated', 'success');
+      closeModal();
+      loadPromoContacts();
+    } else {
+      document.getElementById('edit-contact-err-api').textContent = data.error || 'Update failed';
+      document.getElementById('edit-contact-err-api').style.display = 'block';
+    }
+  } catch (e) { toast('Could not update contact', 'error'); }
 }
 
 async function confirmDeleteContact(contactId) {
