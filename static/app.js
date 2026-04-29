@@ -474,6 +474,7 @@ function renderPipelineDrilldown(allModules) {
 
     // Subscription works are CRM constructs — no modules
     const isSubscription = w.work_type === 'Subscription';
+    const isRetreat      = w.work_type === 'Retreat (Event)';
 
     const header = `
       <div class="works-row-header" onclick="${isSubscription ? '' : `toggleProducingWorkExpand('${workId.replace(/'/g, "\\'")}')` }">
@@ -489,6 +490,9 @@ function renderPipelineDrilldown(allModules) {
           ${isSubscription ? `
           <button class="pipeline-open-btn" style="font-size:11px;padding:3px 10px;"
                   onclick="event.stopPropagation();openEditSubscriptionModal('${encodedId}')">Edit</button>` : ''}
+          ${isRetreat ? `
+          <button class="pipeline-open-btn" style="font-size:11px;padding:3px 10px;"
+                  onclick="event.stopPropagation();openEditRetreatModal('${encodedId}')">Edit</button>` : ''}
           <button class="pipeline-open-btn" style="font-size:11px;padding:3px 10px;color:var(--muted);border-color:var(--muted);"
                   onclick="event.stopPropagation();confirmDeleteWork('${encodedId}')">Delete</button>
           ${isSubscription ? '' : `<span class="works-row-expand">${isExpanded ? '▲' : '▼'}</span>`}
@@ -1720,6 +1724,7 @@ function selectNewWorkType(workType) {
 function renderNewWorkForm(workType) {
   const isBook         = workType === 'Book';
   const isSubscription = workType === 'Subscription';
+  const isRetreat      = workType === 'Retreat (Event)';
 
   const bookFields = isBook ? `
     <div class="form-group">
@@ -1763,6 +1768,23 @@ function renderNewWorkForm(workType) {
       <label class="form-label">Monthly Price (R) <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
       <input id="nw-price" class="form-input" type="number" min="0" step="0.01" placeholder="e.g. 150"/>
     </div>` : ''}
+    ${isRetreat ? `
+    <div class="form-group">
+      <label class="form-label">Date</label>
+      <input id="nw-event-date" class="form-input" type="date"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Cost (R)</label>
+      <input id="nw-event-cost" class="form-input" type="number" min="0" step="0.01" placeholder="e.g. 2500"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">URL <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
+      <input id="nw-event-url" class="form-input" placeholder="https://..."/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Notes</label>
+      <textarea id="nw-event-notes" class="form-textarea" style="min-height:80px;" placeholder="Any notes about this retreat…"></textarea>
+    </div>` : ''}
     <div class="form-group">
       <label class="form-label">Patreon URL <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
       <input id="nw-patreon-url" class="form-input" placeholder="https://patreon.com/..."/>
@@ -1787,6 +1809,10 @@ async function submitNewWork(workType) {
   const websiteUrl  = document.getElementById('nw-website-url')?.value.trim() || '';
   const chaptersText= document.getElementById('nw-chapters-text')?.value.trim() || '';
   const price       = parseFloat(document.getElementById('nw-price')?.value || '0') || 0;
+  const eventDate   = document.getElementById('nw-event-date')?.value.trim() || '';
+  const eventCost   = parseFloat(document.getElementById('nw-event-cost')?.value || '0') || 0;
+  const eventUrl    = document.getElementById('nw-event-url')?.value.trim() || '';
+  const eventNotes  = document.getElementById('nw-event-notes')?.value.trim() || '';
 
   if (!title) { toast('Title is required', 'error'); return; }
   if (workType === 'Book') {
@@ -1800,6 +1826,7 @@ async function submitNewWork(workType) {
       series_code: seriesCode, url_slug: urlSlug,
       patreon_url: patreonUrl, website_url: websiteUrl,
       chapters_text: chaptersText,
+      event_date: eventDate, event_cost: eventCost, event_url: eventUrl, event_notes: eventNotes,
     });
     const imported = result.chapters_imported || 0;
     closeModal();
@@ -1876,6 +1903,72 @@ async function submitEditSubscription(workId) {
     await loadProducing();
   } catch (e) {
     toast('Failed to update subscription: ' + e.message, 'error');
+  }
+}
+
+// ── Edit Retreat Modal ────────────────────────────────────────────────────────
+
+async function openEditRetreatModal(encodedWorkId) {
+  const workId = decodeURIComponent(encodedWorkId);
+  const mc = document.getElementById('modal-content');
+  if (!mc) return;
+  showModal();
+  mc.innerHTML = '<div style="padding:20px;color:var(--muted);">Loading…</div>';
+
+  const catalog = await GET('/api/catalog-works');
+  const w = (catalog.works || []).find(x => x.id === workId);
+  if (!w) { mc.innerHTML = '<div style="padding:20px;">Work not found</div>'; return; }
+
+  mc.innerHTML = `
+    <div class="modal-title">Edit Retreat — ${esc(w.title)}</div>
+    <div class="form-group" style="margin-top:16px;">
+      <label class="form-label">Title</label>
+      <input id="er-title" class="form-input" value="${esc(w.title)}"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Author</label>
+      <input id="er-author" class="form-input" value="${esc(w.author || '')}"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Date</label>
+      <input id="er-event-date" class="form-input" type="date" value="${esc(w.event_date || '')}"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Cost (R)</label>
+      <input id="er-event-cost" class="form-input" type="number" min="0" step="0.01" value="${w.event_cost || 0}"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">URL <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
+      <input id="er-event-url" class="form-input" value="${esc(w.event_url || '')}"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Notes</label>
+      <textarea id="er-event-notes" class="form-textarea" style="min-height:80px;">${esc(w.event_notes || '')}</textarea>
+    </div>
+    <div class="modal-actions" style="display:flex;justify-content:space-between;margin-top:24px;">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="submitEditRetreat('${workId}')">Save Changes</button>
+    </div>`;
+}
+
+async function submitEditRetreat(workId) {
+  const title      = document.getElementById('er-title')?.value.trim();
+  const author     = document.getElementById('er-author')?.value.trim() || '';
+  const eventDate  = document.getElementById('er-event-date')?.value.trim() || '';
+  const eventCost  = parseFloat(document.getElementById('er-event-cost')?.value || '0') || 0;
+  const eventUrl   = document.getElementById('er-event-url')?.value.trim() || '';
+  const eventNotes = document.getElementById('er-event-notes')?.value.trim() || '';
+
+  if (!title) { toast('Title is required', 'error'); return; }
+
+  try {
+    await PUT(`/api/catalog-works/${workId}`, { title, author, event_date: eventDate, event_cost: eventCost, event_url: eventUrl, event_notes: eventNotes });
+    closeModal();
+    toast('Retreat updated', 'success');
+    pipelineState.overviewData = null; pipelineState.catalogWorks = null;
+    await loadProducing();
+  } catch (e) {
+    toast('Failed to update retreat: ' + e.message, 'error');
   }
 }
 

@@ -396,6 +396,11 @@ def create_catalog_work():
         'website_url': data.get('website_url', ''),
         'created_at':  now,
     }
+    if work_type == 'Retreat (Event)':
+        new_work['event_date']  = data.get('event_date', '')
+        new_work['event_cost']  = float(data.get('event_cost', 0) or 0)
+        new_work['event_url']   = data.get('event_url', '')
+        new_work['event_notes'] = data.get('event_notes', '')
     catalog['works'].append(new_work)
     write_json('catalog_works.json', catalog)
 
@@ -512,11 +517,12 @@ def update_catalog_work(work_id):
     catalog = read_json('catalog_works.json') or {'works': []}
     for i, w in enumerate(catalog.get('works', [])):
         if w['id'] == work_id:
-            allowed = {'title', 'genre', 'patreon_url', 'website_url', 'author', 'price'}
+            allowed = {'title', 'genre', 'patreon_url', 'website_url', 'author', 'price',
+                       'event_date', 'event_cost', 'event_url', 'event_notes'}
             for k in allowed:
                 if k in data:
                     val = data[k]
-                    if k == 'price':
+                    if k in ('price', 'event_cost'):
                         val = float(val or 0)
                     catalog['works'][i][k] = val
             write_json('catalog_works.json', catalog)
