@@ -207,8 +207,11 @@ def delete_contact(contact_id):
 def import_contacts():
     """
     CSV import. Expected columns (flexible header matching):
-      name / Name, phone / Phone / Number, email / Email
+      name / Name, phone / Phone / Number, email / Email,
+      lead / Lead / lead type / Lead Type  (optional — work title to create a lead)
     Skips duplicates by phone number.
+    When a Lead column is present, looks up the work by title in catalog_works.json,
+    resolves the pipeline from the work type, and creates a CRM lead for each new contact.
     """
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
@@ -219,10 +222,11 @@ def import_contacts():
     contacts = _get_contacts()
     existing_phones = {c.get('phone') for c in contacts}
 
-    imported = 0
-    skipped  = 0
-    errors   = []
-    now      = _now()
+    imported      = 0
+    skipped       = 0
+    leads_created = 0
+    errors        = []
+    now           = _now()
 
     # Flexible header matching
     def _col(row, *keys):
@@ -232,11 +236,23 @@ def import_contacts():
                     return row[rk].strip()
         return ''
 
+    # Build work-title → work lookup and pipeline work_type → pipeline_id map once
+    from utils.json_store import read_json as _rj
+    catalog     = _rj('catalog_works.json') or {'works': []}
+    works_by_title = {w.get('title', '').lower(): w for w in catalog.get('works', [])}
+
+    pipelines = _get_pipelines()
+    # work_type → pipeline_id (e.g. "Subscription" → "subscription")
+    pipeline_by_wtype = {p.get('work_type', ''): p for p in pipelines if p.get('work_type')}
+
+    new_leads = []
+
     for i, row in enumerate(reader, start=2):
-        name  = _col(row, 'name', 'Name', 'full name', 'Full Name')
-        phone = _col(row, 'phone', 'Phone', 'number', 'Number',
-                     'phone number', 'Phone Number', 'mobile', 'Mobile')
-        email = _col(row, 'email', 'Email')
+        name       = _col(row, 'name', 'Name', 'full name', 'Full Name')
+        phone      = _col(row, 'phone', 'Phone', 'number', 'Number',
+                          'phone number', 'Phone Number', 'mobile', 'Mobile')
+        email      = _col(row, 'email', 'Email')
+        lead_title = _col(row, 'lead', 'Lead', 'lead type', 'Lead Type')
 
         if not name:
             errors.append(f'Row {i}: missing name')
@@ -270,8 +286,53 @@ def import_contacts():
             existing_phones.add(phone)
         imported += 1
 
+        # Create a lead if a Lead column value was provided
+        if lead_title:
+            work = works_by_title.get(lead_title.lower())
+            if not work:
+                errors.append(f'Row {i} ({name}): lead type "{lead_title}" not found — lead skipped')
+            else:
+                pipeline = pipeline_by_wtype.get(work.get('work_type', ''))
+                if not pipeline:
+                    errors.append(
+                        f'Row {i} ({name}): no pipeline for work type '
+                        f'"{work.get("work_type","")}" — lead skipped'
+                    )
+                else:
+                    first_stage = pipeline['stages'][0]['code'] if pipeline.get('stages') else 'enquiry'
+                    lead = {
+                        'id':                str(uuid.uuid4()),
+                        'contact_id':        contact['id'],
+                        'contact_name':      name,
+                        'contact_phone':     phone,
+                        'pipeline_id':       pipeline['id'],
+                        'pipeline_name':     pipeline['name'],
+                        'work_id':           work.get('id', ''),
+                        'work_title':        work.get('title', ''),
+                        'stage':             first_stage,
+                        'status':            'open',
+                        'value':             float(work.get('price') or 0),
+                        'notes':             '',
+                        'communication_log': [],
+                        'created_at':        now,
+                        'updated_at':        now,
+                    }
+                    new_leads.append(lead)
+                    leads_created += 1
+
     _save_contacts(contacts)
-    return jsonify({'imported': imported, 'skipped': skipped, 'errors': errors})
+
+    if new_leads:
+        leads = _get_leads()
+        leads.extend(new_leads)
+        _save_leads(leads)
+
+    return jsonify({
+        'imported':      imported,
+        'skipped':       skipped,
+        'leads_created': leads_created,
+        'errors':        errors,
+    })
 
 
 @bp.route('/api/crm/contacts/bulk_message', methods=['POST'])

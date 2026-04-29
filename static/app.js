@@ -11812,9 +11812,14 @@ async function importContactsCSV(input) {
     const r = await fetch('/api/crm/contacts/import', { method: 'POST', body: fd });
     const d = await r.json();
     if (d.error) { toast(d.error, 'error'); return; }
-    toast(`Imported ${d.imported} contact(s)${d.skipped ? `, skipped ${d.skipped}` : ''}.`, 'success');
-    const cRes = await GET('/api/crm/contacts');
+    let msg = `Imported ${d.imported} contact(s)${d.skipped ? `, skipped ${d.skipped}` : ''}`;
+    if (d.leads_created) msg += `, ${d.leads_created} lead(s) created`;
+    msg += '.';
+    toast(msg, 'success');
+    if (d.errors && d.errors.length) d.errors.forEach(e => toast(e, 'warning'));
+    const [cRes, lRes] = await Promise.all([GET('/api/crm/contacts'), GET('/api/crm/leads')]);
     state.crm.contacts = cRes.contacts || [];
+    state.crm.leads    = lRes.leads    || [];
     renderCRMContacts();
   } catch(e) { toast('Import failed: ' + e.message, 'error'); }
 }
