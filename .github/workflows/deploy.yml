@@ -67,22 +67,23 @@ jobs:
             sudo systemctl daemon-reload
             sudo systemctl reset-failed indaba-app || true
             sudo systemctl restart indaba-app
-            echo "[step 5 done] sleeping 6s for service to come up"
-            sleep 6
+            echo "[step 5 done]"
 
-            echo "[step 6] post-start health check"
-            if ! sudo systemctl is-active --quiet indaba-app; then
-              echo "::error::indaba-app service did not become active"
-              sudo systemctl status indaba-app --no-pager || true
-              sudo journalctl -u indaba-app -n 80 --no-pager || true
-              exit 1
-            fi
-
-            if ! curl -sf --max-time 15 http://localhost:5050/api/content-pipeline > /dev/null; then
-              echo "::error::Health check FAILED"
-              sudo lsof -i :5050 || true
-              sudo journalctl -u indaba-app -n 80 --no-pager || true
-              exit 1
-            fi
-            echo "Health check passed — app is serving"
+            echo "[step 6] poll for service active + responding (up to 60s)"
+            # The app does AssetSync + Migration on startup which can
+            # take 10-20s. Poll every 2s instead of single-shot.
+            for i in $(seq 1 30); do
+              if sudo systemctl is-active --quiet indaba-app \
+                 && curl -sf --max-time 5 http://localhost:5050/api/content-pipeline > /dev/null; then
+                echo "[step 6 ok] healthy after ${i}x2s"
+                break
+              fi
+              if [ "$i" = "30" ]; then
+                echo "::error::Health check FAILED after 60s"
+                sudo systemctl status indaba-app --no-pager || true
+                sudo journalctl -u indaba-app -n 80 --no-pager || true
+                exit 1
+              fi
+              sleep 2
+            done
             echo "===== DEPLOY OK $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
