@@ -390,6 +390,7 @@ def create_catalog_work():
         'work_type':   work_type,
         'author':      data.get('author', ''),
         'genre':       data.get('genre', ''),
+        'price':       float(data.get('price', 0) or 0),
         'url_slug':    url_slug or '',
         'patreon_url': data.get('patreon_url', ''),
         'website_url': data.get('website_url', ''),
@@ -511,10 +512,13 @@ def update_catalog_work(work_id):
     catalog = read_json('catalog_works.json') or {'works': []}
     for i, w in enumerate(catalog.get('works', [])):
         if w['id'] == work_id:
-            allowed = {'title', 'genre', 'patreon_url', 'website_url', 'author'}
+            allowed = {'title', 'genre', 'patreon_url', 'website_url', 'author', 'price'}
             for k in allowed:
                 if k in data:
-                    catalog['works'][i][k] = data[k]
+                    val = data[k]
+                    if k == 'price':
+                        val = float(val or 0)
+                    catalog['works'][i][k] = val
             write_json('catalog_works.json', catalog)
             return jsonify(catalog['works'][i])
     return jsonify({'error': 'Not found'}), 404

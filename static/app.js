@@ -486,6 +486,9 @@ function renderPipelineDrilldown(allModules) {
           ${isSubscription ? '' : `
           <button class="pipeline-open-btn" style="font-size:11px;padding:3px 10px;"
                   onclick="event.stopPropagation();openAddModuleModal('${encodedId}','${encodedType}')">+ Module</button>`}
+          ${isSubscription ? `
+          <button class="pipeline-open-btn" style="font-size:11px;padding:3px 10px;"
+                  onclick="event.stopPropagation();openEditSubscriptionModal('${encodedId}')">Edit</button>` : ''}
           <button class="pipeline-open-btn" style="font-size:11px;padding:3px 10px;color:var(--muted);border-color:var(--muted);"
                   onclick="event.stopPropagation();confirmDeleteWork('${encodedId}')">Delete</button>
           ${isSubscription ? '' : `<span class="works-row-expand">${isExpanded ? '▲' : '▼'}</span>`}
@@ -1715,7 +1718,8 @@ function selectNewWorkType(workType) {
 }
 
 function renderNewWorkForm(workType) {
-  const isBook = workType === 'Book';
+  const isBook         = workType === 'Book';
+  const isSubscription = workType === 'Subscription';
 
   const bookFields = isBook ? `
     <div class="form-group">
@@ -1754,6 +1758,11 @@ function renderNewWorkForm(workType) {
       <input id="nw-author" class="form-input" placeholder="Author name" value="Fidel Namisi"/>
     </div>
     ${bookFields}
+    ${isSubscription ? `
+    <div class="form-group">
+      <label class="form-label">Monthly Price (R) <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
+      <input id="nw-price" class="form-input" type="number" min="0" step="0.01" placeholder="e.g. 150"/>
+    </div>` : ''}
     <div class="form-group">
       <label class="form-label">Patreon URL <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
       <input id="nw-patreon-url" class="form-input" placeholder="https://patreon.com/..."/>
@@ -1777,6 +1786,7 @@ async function submitNewWork(workType) {
   const patreonUrl  = document.getElementById('nw-patreon-url')?.value.trim() || '';
   const websiteUrl  = document.getElementById('nw-website-url')?.value.trim() || '';
   const chaptersText= document.getElementById('nw-chapters-text')?.value.trim() || '';
+  const price       = parseFloat(document.getElementById('nw-price')?.value || '0') || 0;
 
   if (!title) { toast('Title is required', 'error'); return; }
   if (workType === 'Book') {
@@ -1786,7 +1796,7 @@ async function submitNewWork(workType) {
 
   try {
     const result = await POST('/api/catalog-works', {
-      title, work_type: workType, author, genre,
+      title, work_type: workType, author, genre, price,
       series_code: seriesCode, url_slug: urlSlug,
       patreon_url: patreonUrl, website_url: websiteUrl,
       chapters_text: chaptersText,
@@ -1805,6 +1815,67 @@ async function submitNewWork(workType) {
     }
   } catch (e) {
     toast('Failed to create work: ' + e.message, 'error');
+  }
+}
+
+// ── Edit Subscription Modal ───────────────────────────────────────────────────
+
+async function openEditSubscriptionModal(encodedWorkId) {
+  const workId = decodeURIComponent(encodedWorkId);
+  const mc = document.getElementById('modal-content');
+  if (!mc) return;
+  showModal();
+  mc.innerHTML = '<div style="padding:20px;color:var(--muted);">Loading…</div>';
+
+  const catalog = await GET('/api/catalog-works');
+  const w = (catalog.works || []).find(x => x.id === workId);
+  if (!w) { mc.innerHTML = '<div style="padding:20px;">Work not found</div>'; return; }
+
+  mc.innerHTML = `
+    <div class="modal-title">Edit Subscription — ${esc(w.title)}</div>
+    <div class="form-group" style="margin-top:16px;">
+      <label class="form-label">Title</label>
+      <input id="es-title" class="form-input" value="${esc(w.title)}"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Author</label>
+      <input id="es-author" class="form-input" value="${esc(w.author || '')}"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Monthly Price (R)</label>
+      <input id="es-price" class="form-input" type="number" min="0" step="0.01" value="${w.price || 0}"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Patreon URL <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
+      <input id="es-patreon-url" class="form-input" value="${esc(w.patreon_url || '')}"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Website URL <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
+      <input id="es-website-url" class="form-input" value="${esc(w.website_url || '')}"/>
+    </div>
+    <div class="modal-actions" style="display:flex;justify-content:space-between;margin-top:24px;">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="submitEditSubscription('${workId}')">Save Changes</button>
+    </div>`;
+}
+
+async function submitEditSubscription(workId) {
+  const title      = document.getElementById('es-title')?.value.trim();
+  const author     = document.getElementById('es-author')?.value.trim() || '';
+  const price      = parseFloat(document.getElementById('es-price')?.value || '0') || 0;
+  const patreonUrl = document.getElementById('es-patreon-url')?.value.trim() || '';
+  const websiteUrl = document.getElementById('es-website-url')?.value.trim() || '';
+
+  if (!title) { toast('Title is required', 'error'); return; }
+
+  try {
+    await PUT(`/api/catalog-works/${workId}`, { title, author, price, patreon_url: patreonUrl, website_url: websiteUrl });
+    closeModal();
+    toast('Subscription updated', 'success');
+    pipelineState.overviewData = null; pipelineState.catalogWorks = null;
+    await loadProducing();
+  } catch (e) {
+    toast('Failed to update subscription: ' + e.message, 'error');
   }
 }
 
