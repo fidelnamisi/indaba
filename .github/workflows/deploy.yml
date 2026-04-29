@@ -58,7 +58,13 @@ jobs:
             echo "[step 4] verify venv python exists"
             ls -la "$WORK/venv/bin/python"
 
-            echo "[step 5] reset failure counter and restart cleanly"
+            echo "[step 5] cleanup any deploy-pause drop-ins and restart"
+            # A previous deploy attempt left
+            # /etc/systemd/system/indaba-app.service.d/deploy-pause.conf
+            # which sets Restart=no. Remove it before restarting so
+            # the unit's normal restart policy resumes.
+            sudo rm -rf /etc/systemd/system/indaba-app.service.d
+            sudo systemctl daemon-reload
             sudo systemctl reset-failed indaba-app || true
             sudo systemctl restart indaba-app
             echo "[step 5 done] sleeping 6s for service to come up"
