@@ -16,104 +16,76 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script_stop: true
           command_timeout: 10m
-          # GITHUB_TOKEN is substituted into the script string by GitHub
-          # Actions before the script is sent over SSH (more reliable
-          # than `envs:` which has not been passing through in practice).
           script: |
-            # Capture stdout+stderr to a log file the smoke-proverb
-            # workflow can read. stdbuf -oL forces line buffering so
-            # the log is complete even if the script dies mid-stream.
-            exec > >(stdbuf -oL tee /tmp/last-deploy.log) 2>&1
+            # Direct-redirect to a file (no `tee | pipe`). The previous
+            # `exec > >(tee ...)` form created a pipe; bash applies block
+            # buffering on pipe-redirected stdout and silently truncated
+            # the captured log when the script died. Direct file redirect
+            # uses the kernel's per-write semantics — every echo lands
+            # in the file immediately.
+            exec > /tmp/last-deploy.log 2>&1
             echo "===== DEPLOY START $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
             set -eu
 
             WORK=/opt/indaba-app
             TMPCLONE=/tmp/indaba-stage
+            DROPIN=/etc/systemd/system/indaba-app.service.d/deploy-pause.conf
 
-            # Set the token in an isolated subshell with no trace, so
-            # it never lands in /tmp/last-deploy.log (which is posted
-            # to issue #1 publicly-style).
             { TOKEN='${{ secrets.GITHUB_TOKEN }}'; } 2>/dev/null
-            echo "[diag] token present: $([ -n "$TOKEN" ] && echo yes || echo no), length: ${#TOKEN}"
+            echo "[diag] token len: ${#TOKEN}"
 
-            set -x
-
-            # Clone as ubuntu (no sudo) into /tmp. Repo is private so
-            # we authenticate via x-access-token:$TOKEN@github.com — the
-            # canonical GitHub HTTPS auth pattern that actions/checkout
-            # uses internally. GIT_TERMINAL_PROMPT=0 makes git fail
-            # cleanly instead of hanging if auth ever falls through.
-            rm -rf "$TMPCLONE"
-            { set +x; } 2>/dev/null
-            GIT_TERMINAL_PROMPT=0 git clone --depth=1 --branch main \
-              "https://x-access-token:${TOKEN}@github.com/fidelnamisi/indaba.git" \
-              "$TMPCLONE"
-            # Strip the credentialed URL immediately — token must not
-            # persist in any .git/config we move into /opt.
-            git -C "$TMPCLONE" remote set-url origin https://github.com/fidelnamisi/indaba.git
-            unset TOKEN
-            set -x
-
-            # Mask the unit BEFORE stopping it. Without this, the
-            # unit's `Restart=always` directive keeps trying to start
-            # the service every ~10s during the deploy, racing with
-            # our file changes (restart counter was at 142 before
-            # the prior deploy attempt because every prior failure
-            # left systemd in an auto-restart loop). Mask creates a
-            # /dev/null symlink in /etc/systemd/system that fully
-            # blocks any start request.
-            sudo systemctl mask indaba-app || true
+            echo "[step 1] disable systemd auto-restart for the service"
+            # `systemctl mask` doesn't work when the unit file already
+            # exists (which it does — that's where ExecStart lives).
+            # Use a drop-in instead — overrides Restart= without
+            # modifying the original unit. daemon-reload is required
+            # for systemd to pick up the override.
+            sudo mkdir -p "$(dirname "$DROPIN")"
+            echo -e "[Service]\nRestart=no" | sudo tee "$DROPIN" > /dev/null
+            sudo systemctl daemon-reload
             sudo systemctl stop indaba-app || true
             sudo systemctl reset-failed indaba-app || true
             sudo pkill -9 -f "python.*app.py" || true
             sudo lsof -ti :5050 | xargs -r sudo kill -9 || true
-            sudo lsof -ti :5051 | xargs -r sudo kill -9 || true
             sleep 2
 
-            # rsync the new code into /opt/indaba-app, leaving venv/ and
-            # data/ untouched. This is critical: pip-installed scripts
-            # in venv/bin have absolute-path shebangs, so the venv MUST
-            # stay at /opt/indaba-app/venv permanently. Moving it to a
-            # staging path (the previous deploy strategy) corrupted the
-            # shebangs and produced systemd 203/EXEC failures on restart.
-            #
-            # --delete removes files removed in the new clone, but the
-            # --exclude rules keep venv/, data/, and pcloud token files
-            # intact regardless.
+            echo "[step 2] git clone fresh code (private repo, x-access-token auth)"
+            rm -rf "$TMPCLONE"
+            GIT_TERMINAL_PROMPT=0 git clone --depth=1 --branch main \
+              "https://x-access-token:${TOKEN}@github.com/fidelnamisi/indaba.git" \
+              "$TMPCLONE"
+            git -C "$TMPCLONE" remote set-url origin https://github.com/fidelnamisi/indaba.git
+            unset TOKEN
+
+            echo "[step 3] rsync code into $WORK (preserving venv/ and data/)"
             sudo mkdir -p "$WORK"
             sudo rsync -a --delete \
               --exclude='/venv' \
               --exclude='/data' \
               "$TMPCLONE/" "$WORK/"
             sudo chown -R ubuntu:ubuntu "$WORK"
+            rm -rf "$TMPCLONE"
 
-            # Create venv from scratch every deploy. Slightly slower
-            # (~30s) but bulletproof: any stale shebangs from a prior
-            # broken deploy are wiped clean. A pip-installed script in
-            # a venv has its shebang baked in as an absolute path, so
-            # any prior path drift would persist forever otherwise.
+            echo "[step 4] rebuild venv from scratch"
             sudo rm -rf "$WORK/venv"
             python3 -m venv "$WORK/venv"
             "$WORK/venv/bin/python" -m pip install --upgrade pip
             "$WORK/venv/bin/pip" install -r "$WORK/requirements.txt"
 
-            # Cleanup tmp clone.
-            rm -rf "$TMPCLONE"
-
-            # Verify the venv python that systemd will exec actually
-            # exists — we have been silently shipping broken venvs.
+            echo "[step 5] verify venv python exists"
             ls -la "$WORK/venv/bin/python" || {
               echo "::error::venv python missing after build"
               exit 1
             }
 
-            # Unmask and start the service.
-            sudo systemctl unmask indaba-app
+            echo "[step 6] remove deploy-pause drop-in and start service"
+            sudo rm -f "$DROPIN"
+            sudo systemctl daemon-reload
             sudo systemctl reset-failed indaba-app || true
             sudo systemctl start indaba-app
             sleep 6
 
-            # Loud diagnostics if the service didn't come up.
+            echo "[step 7] post-start health check"
             if ! sudo systemctl is-active --quiet indaba-app; then
               echo "::error::indaba-app service did not become active"
               echo "--- systemctl status ---"
