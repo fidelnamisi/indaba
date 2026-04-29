@@ -2,8 +2,6 @@ name: Deploy to EC2
 on:
   push:
     branches: [main]
-permissions:
-  contents: read
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -17,47 +15,30 @@ jobs:
           script_stop: true
           command_timeout: 10m
           script: |
-            # Direct-redirect to a file (no `tee | pipe`). The previous
-            # `exec > >(tee ...)` form created a pipe; bash applies block
-            # buffering on pipe-redirected stdout and silently truncated
-            # the captured log when the script died. Direct file redirect
-            # uses the kernel's per-write semantics — every echo lands
-            # in the file immediately.
+            # Direct file redirect (no tee pipe — bash block-buffers
+            # pipe-redirected stdout and silently truncates the log).
             exec > /tmp/last-deploy.log 2>&1
             echo "===== DEPLOY START $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
             set -eu
 
             WORK=/opt/indaba-app
             TMPCLONE=/tmp/indaba-stage
-            DROPIN=/etc/systemd/system/indaba-app.service.d/deploy-pause.conf
 
-            { TOKEN='${{ secrets.GITHUB_TOKEN }}'; } 2>/dev/null
-            echo "[diag] token len: ${#TOKEN}"
+            # Strategy: build a working /opt/indaba-app/venv/bin/python
+            # FIRST, before touching systemd. The unit has Restart=always
+            # and has been failing 203/EXEC every ~10s for hours. Once
+            # venv exists with valid python, the next auto-restart
+            # succeeds on its own — no need to mask, pause, or stop the
+            # service. Previous deploys that tried to fight the restart
+            # loop hung on systemd interactions.
 
-            echo "[step 1] disable systemd auto-restart for the service"
-            # `systemctl mask` doesn't work when the unit file already
-            # exists (which it does — that's where ExecStart lives).
-            # Use a drop-in instead — overrides Restart= without
-            # modifying the original unit. daemon-reload is required
-            # for systemd to pick up the override.
-            sudo mkdir -p "$(dirname "$DROPIN")"
-            echo -e "[Service]\nRestart=no" | sudo tee "$DROPIN" > /dev/null
-            sudo systemctl daemon-reload
-            sudo systemctl stop indaba-app || true
-            sudo systemctl reset-failed indaba-app || true
-            sudo pkill -9 -f "python.*app.py" || true
-            sudo lsof -ti :5050 | xargs -r sudo kill -9 || true
-            sleep 2
-
-            echo "[step 2] git clone fresh code (private repo, x-access-token auth)"
+            echo "[step 1] git clone fresh code (repo is public — no auth needed)"
             rm -rf "$TMPCLONE"
             GIT_TERMINAL_PROMPT=0 git clone --depth=1 --branch main \
-              "https://x-access-token:${TOKEN}@github.com/fidelnamisi/indaba.git" \
-              "$TMPCLONE"
-            git -C "$TMPCLONE" remote set-url origin https://github.com/fidelnamisi/indaba.git
-            unset TOKEN
+              https://github.com/fidelnamisi/indaba.git "$TMPCLONE"
+            echo "[step 1 done] cloned $(git -C "$TMPCLONE" rev-parse --short HEAD)"
 
-            echo "[step 3] rsync code into $WORK (preserving venv/ and data/)"
+            echo "[step 2] rsync code into $WORK (preserving venv/, data/)"
             sudo mkdir -p "$WORK"
             sudo rsync -a --delete \
               --exclude='/venv' \
@@ -65,43 +46,35 @@ jobs:
               "$TMPCLONE/" "$WORK/"
             sudo chown -R ubuntu:ubuntu "$WORK"
             rm -rf "$TMPCLONE"
+            echo "[step 2 done]"
 
-            echo "[step 4] rebuild venv from scratch"
+            echo "[step 3] rebuild venv from scratch"
             sudo rm -rf "$WORK/venv"
             python3 -m venv "$WORK/venv"
             "$WORK/venv/bin/python" -m pip install --upgrade pip
             "$WORK/venv/bin/pip" install -r "$WORK/requirements.txt"
+            echo "[step 3 done]"
 
-            echo "[step 5] verify venv python exists"
-            ls -la "$WORK/venv/bin/python" || {
-              echo "::error::venv python missing after build"
-              exit 1
-            }
+            echo "[step 4] verify venv python exists"
+            ls -la "$WORK/venv/bin/python"
 
-            echo "[step 6] remove deploy-pause drop-in and start service"
-            sudo rm -f "$DROPIN"
-            sudo systemctl daemon-reload
+            echo "[step 5] reset failure counter and restart cleanly"
             sudo systemctl reset-failed indaba-app || true
-            sudo systemctl start indaba-app
+            sudo systemctl restart indaba-app
+            echo "[step 5 done] sleeping 6s for service to come up"
             sleep 6
 
-            echo "[step 7] post-start health check"
+            echo "[step 6] post-start health check"
             if ! sudo systemctl is-active --quiet indaba-app; then
               echo "::error::indaba-app service did not become active"
-              echo "--- systemctl status ---"
               sudo systemctl status indaba-app --no-pager || true
-              echo "--- ExecStart from unit file ---"
-              sudo systemctl cat indaba-app | grep -E "ExecStart|WorkingDirectory|User" || true
-              echo "--- last 80 journal lines ---"
               sudo journalctl -u indaba-app -n 80 --no-pager || true
               exit 1
             fi
 
             if ! curl -sf --max-time 15 http://localhost:5050/api/content-pipeline > /dev/null; then
-              echo "::error::Health check FAILED — app not responding on :5050"
-              echo "--- listening ports ---"
+              echo "::error::Health check FAILED"
               sudo lsof -i :5050 || true
-              echo "--- last 80 journal lines ---"
               sudo journalctl -u indaba-app -n 80 --no-pager || true
               exit 1
             fi

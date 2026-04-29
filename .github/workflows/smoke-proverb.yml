@@ -1,9 +1,14 @@
-name: Smoke proverb generate
+name: Post-deploy diagnostics
 on:
   workflow_run:
     workflows: ["Deploy to EC2"]
     types: [completed]
   workflow_dispatch:
+
+# Captures the deploy script's log + service state from EC2 and posts
+# it to issue #1 after every Deploy to EC2 run. This is the only
+# debugging window into deploys when GitHub Actions log access is not
+# available from the build environment.
 
 jobs:
   smoke:
@@ -20,51 +25,37 @@ jobs:
           chmod 600 ~/.ssh/ec2.pem
           ssh-keyscan -H 13.218.60.13 >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Run diagnostic on EC2 and capture output
-        id: smoke
+      - name: Capture deploy diagnostics
         run: |
           set +e
           SSH="ssh -i ~/.ssh/ec2.pem -o StrictHostKeyChecking=no -o ConnectTimeout=15 ubuntu@13.218.60.13"
           DEPLOY_CONCLUSION="${{ github.event.workflow_run.conclusion }}"
           DEPLOY_CONCLUSION="${DEPLOY_CONCLUSION:-manual}"
           {
-            echo "## Smoke test"
+            echo "## Deploy diagnostics"
             echo "- Deploy conclusion: \`$DEPLOY_CONCLUSION\`"
-            echo "- Run: ${{ github.run_id }}"
             echo "- Commit: ${{ github.sha }}"
             echo "- Time (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo
-            echo "### Last deploy script log (/tmp/last-deploy.log on EC2)"
+            echo "### Deploy script log (/tmp/last-deploy.log on EC2)"
             echo '```'
-            $SSH "tail -120 /tmp/last-deploy.log 2>&1 || echo '(log file not present)'"
-            echo '```'
-            echo
-            echo "### Service status"
-            echo '```'
-            $SSH "sudo systemctl is-active indaba-app; cd /opt/indaba-app && git log -1 --oneline"
+            $SSH "tail -200 /tmp/last-deploy.log 2>&1 || echo '(log file not present)'"
             echo '```'
             echo
-            echo "### GET /api/promo/proverbs/_debug_env"
-            echo '```json'
-            $SSH "curl -s --max-time 15 http://localhost:5050/api/promo/proverbs/_debug_env || echo 'curl failed'"
-            echo
+            echo "### Service state"
             echo '```'
-            echo
-            echo "### POST /api/promo/broadcast_post/generate (empty body)"
-            echo '```'
-            $SSH "curl -s -w '\nHTTP_STATUS=%{http_code}\n' --max-time 120 -X POST -H 'Content-Type: application/json' -d '{}' http://localhost:5050/api/promo/broadcast_post/generate || echo 'curl failed'"
+            $SSH "sudo systemctl is-active indaba-app; sudo systemctl is-failed indaba-app; cd /opt/indaba-app && git log -1 --oneline"
             echo '```'
             echo
             echo "### Last 40 journal lines for indaba-app"
             echo '```'
             $SSH "sudo journalctl -u indaba-app -n 40 --no-pager 2>&1 | tail -50"
             echo '```'
-          } > smoke-output.md 2>&1
-          echo "--- captured ---"
-          cat smoke-output.md
+          } > diag-output.md 2>&1
+          cat diag-output.md
 
-      - name: Post results to tracking issue
+      - name: Post diagnostics to tracking issue
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh issue comment 1 --repo fidelnamisi/indaba --body-file smoke-output.md
+          gh issue comment 1 --repo fidelnamisi/indaba --body-file diag-output.md
