@@ -6283,7 +6283,7 @@ function renderPromoContacts() {
         const openLeadsCount = state.promoLeads.filter(l => l.contact_id === c.id && !['won', 'lost'].includes(l.stage)).length;
         return `
           <tr>
-            <td><strong>${esc(c.name)}</strong></td>
+            <td><strong>${esc(c.wa_name)}</strong>${c.first_name || c.surname ? `<br><span style="font-size:11px;color:var(--muted);">${esc(c.first_name || '')} ${esc(c.surname || '')}</span>` : ''}</td>
             <td><code>${esc(c.phone)}</code></td>
             <td>${(c.tags || []).map(t => `<span class="badge" style="background:var(--surface2);border:1px solid var(--border2);margin-right:4px;">${esc(t)}</span>`).join('')}</td>
             <td>${openLeadsCount}</td>
@@ -6304,7 +6304,7 @@ function renderPromoContacts() {
     <table class="promo-table">
       <thead>
         <tr>
-          <th>Name</th>
+          <th>WA Name</th>
           <th>Phone</th>
           <th>Tags</th>
           <th>Open Leads</th>
@@ -6337,12 +6337,22 @@ function addContactModal() {
   document.getElementById('modal-content').innerHTML = `
     <div class="modal-title">Add New Contact</div>
     <div class="form-group">
-      <label class="form-label">Name *</label>
+      <label class="form-label">WA Name * <span style="font-size:11px;color:var(--muted);">(display name used in WhatsApp)</span></label>
       <div style="position:relative;">
-        <input class="form-input" id="con-name" type="text" placeholder="Full Name" autocomplete="off"/>
+        <input class="form-input" id="con-wa-name" type="text" placeholder="e.g. John Mugabe" autocomplete="off"/>
         <div id="con-suggestions" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--bg);border:1px solid var(--border);border-radius:4px;z-index:200;max-height:200px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,0.15);"></div>
       </div>
-      <div id="con-err-name" class="inline-error" style="color:var(--p1);font-size:11px;display:none;">Name is required</div>
+      <div id="con-err-name" class="inline-error" style="color:var(--p1);font-size:11px;display:none;">WA Name is required</div>
+    </div>
+    <div style="display:flex;gap:12px;">
+      <div class="form-group" style="flex:1;">
+        <label class="form-label">First Name</label>
+        <input class="form-input" id="con-first-name" type="text" placeholder="e.g. John"/>
+      </div>
+      <div class="form-group" style="flex:1;">
+        <label class="form-label">Surname</label>
+        <input class="form-input" id="con-surname" type="text" placeholder="e.g. Mugabe"/>
+      </div>
     </div>
     <div class="form-group">
       <label class="form-label">Phone *</label>
@@ -6367,22 +6377,24 @@ function addContactModal() {
       <button class="btn-primary" onclick="saveNewContact()">Save Contact</button>
     </div>`;
   showModal();
-  _attachMacOSAutocomplete('con-name', 'con-phone', 'con-email', 'con-suggestions');
+  _attachMacOSAutocomplete('con-wa-name', 'con-phone', 'con-email', 'con-suggestions');
 }
 
 async function saveNewContact() {
-  const name  = document.getElementById('con-name').value.trim();
-  const phone = document.getElementById('con-phone').value.trim();
-  const email = document.getElementById('con-email').value.trim();
-  const tagsText = document.getElementById('con-tags').value.trim();
-  const notes = document.getElementById('con-notes').value.trim();
+  const wa_name   = document.getElementById('con-wa-name').value.trim();
+  const first_name = document.getElementById('con-first-name').value.trim();
+  const surname   = document.getElementById('con-surname').value.trim();
+  const phone     = document.getElementById('con-phone').value.trim();
+  const email     = document.getElementById('con-email').value.trim();
+  const tagsText  = document.getElementById('con-tags').value.trim();
+  const notes     = document.getElementById('con-notes').value.trim();
 
   let valid = true;
   document.getElementById('con-err-name').style.display = 'none';
   document.getElementById('con-err-phone').style.display = 'none';
   document.getElementById('con-err-api').style.display = 'none';
 
-  if (!name) { document.getElementById('con-err-name').style.display = 'block'; valid = false; }
+  if (!wa_name) { document.getElementById('con-err-name').style.display = 'block'; valid = false; }
   if (!phone) { document.getElementById('con-err-phone').style.display = 'block'; valid = false; }
 
   if (!valid) return;
@@ -6393,7 +6405,7 @@ async function saveNewContact() {
     const res = await fetch('/api/promo/contacts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, phone, email, tags, notes })
+      body: JSON.stringify({ wa_name, first_name, surname, phone, email, tags, notes })
     });
     const data = await res.json();
     if (res.status === 201) {
@@ -6434,17 +6446,41 @@ function renderContactDetailModal(data) {
     <div class="promo-settings-section">
       <h3>Contact Info</h3>
       <div id="contact-info-display">
-        <p><strong>Name:</strong> ${esc(contact.name)}</p>
+        <p><strong>WA Name:</strong> ${esc(contact.wa_name)}</p>
+        <p><strong>First Name:</strong> ${esc(contact.first_name || '—')}</p>
+        <p><strong>Surname:</strong> ${esc(contact.surname || '—')}</p>
         <p><strong>Phone:</strong> ${esc(contact.phone)}</p>
         <p><strong>Email:</strong> ${esc(contact.email || '—')}</p>
         <p><strong>Notes:</strong> ${esc(contact.notes || '—')}</p>
         <button class="btn-secondary" style="margin-top:10px;" onclick="editContactInfo('${contact.id}')">Edit Info</button>
       </div>
       <div id="contact-info-edit" style="display:none;">
-        <div class="form-group"><input class="form-input" id="edit-con-name" value="${esc(contact.name)}"/></div>
-        <div class="form-group"><input class="form-input" id="edit-con-phone" value="${esc(contact.phone)}"/></div>
-        <div class="form-group"><input class="form-input" id="edit-con-email" value="${esc(contact.email)}"/></div>
-        <div class="form-group"><textarea class="form-textarea" id="edit-con-notes">${esc(contact.notes)}</textarea></div>
+        <div class="form-group">
+          <label class="form-label">WA Name *</label>
+          <input class="form-input" id="edit-con-wa-name" value="${esc(contact.wa_name)}"/>
+        </div>
+        <div style="display:flex;gap:12px;">
+          <div class="form-group" style="flex:1;">
+            <label class="form-label">First Name</label>
+            <input class="form-input" id="edit-con-first-name" value="${esc(contact.first_name || '')}"/>
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label class="form-label">Surname</label>
+            <input class="form-input" id="edit-con-surname" value="${esc(contact.surname || '')}"/>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Phone *</label>
+          <input class="form-input" id="edit-con-phone" value="${esc(contact.phone)}"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Email</label>
+          <input class="form-input" id="edit-con-email" value="${esc(contact.email || '')}"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Notes</label>
+          <textarea class="form-textarea" id="edit-con-notes">${esc(contact.notes || '')}</textarea>
+        </div>
         <button class="btn-primary" onclick="saveContactInfo('${contact.id}')">Save</button>
         <button class="btn-secondary" onclick="toggleContactEdit(false)">Cancel</button>
       </div>
@@ -6520,13 +6556,17 @@ function toggleContactEdit(editing) {
 function editContactInfo() { toggleContactEdit(true); }
 
 async function saveContactInfo(contactId) {
-  const name = document.getElementById('edit-con-name').value.trim();
-  const phone = document.getElementById('edit-con-phone').value.trim();
-  const email = document.getElementById('edit-con-email').value.trim();
-  const notes = document.getElementById('edit-con-notes').value.trim();
-  
+  const wa_name    = document.getElementById('edit-con-wa-name').value.trim();
+  const first_name = document.getElementById('edit-con-first-name').value.trim();
+  const surname    = document.getElementById('edit-con-surname').value.trim();
+  const phone      = document.getElementById('edit-con-phone').value.trim();
+  const email      = document.getElementById('edit-con-email').value.trim();
+  const notes      = document.getElementById('edit-con-notes').value.trim();
+
+  if (!wa_name) { toast('WA Name is required', 'error'); return; }
+
   try {
-    await PUT(`/api/promo/contacts/${contactId}`, { name, phone, email, notes });
+    await PUT(`/api/promo/contacts/${contactId}`, { wa_name, first_name, surname, phone, email, notes });
     toast('Contact updated', 'success');
     openContactDetail(contactId);
     loadPromoContacts();
@@ -6568,9 +6608,19 @@ function editContactModal(contactId) {
   document.getElementById('modal-content').innerHTML = `
     <div class="modal-title">Edit Contact</div>
     <div class="form-group">
-      <label class="form-label">Name *</label>
-      <input class="form-input" id="edit-contact-name" type="text" value="${esc(c.name)}"/>
-      <div id="edit-contact-err-name" class="inline-error" style="color:var(--p1);font-size:11px;display:none;">Name is required</div>
+      <label class="form-label">WA Name * <span style="font-size:11px;color:var(--muted);">(display name used in WhatsApp)</span></label>
+      <input class="form-input" id="edit-contact-wa-name" type="text" value="${esc(c.wa_name)}"/>
+      <div id="edit-contact-err-name" class="inline-error" style="color:var(--p1);font-size:11px;display:none;">WA Name is required</div>
+    </div>
+    <div style="display:flex;gap:12px;">
+      <div class="form-group" style="flex:1;">
+        <label class="form-label">First Name</label>
+        <input class="form-input" id="edit-contact-first-name" type="text" value="${esc(c.first_name || '')}"/>
+      </div>
+      <div class="form-group" style="flex:1;">
+        <label class="form-label">Surname</label>
+        <input class="form-input" id="edit-contact-surname" type="text" value="${esc(c.surname || '')}"/>
+      </div>
     </div>
     <div class="form-group">
       <label class="form-label">Phone *</label>
@@ -6590,24 +6640,26 @@ function editContactModal(contactId) {
 }
 
 async function saveEditContact(contactId) {
-  const name  = document.getElementById('edit-contact-name').value.trim();
-  const phone = document.getElementById('edit-contact-phone').value.trim();
-  const email = document.getElementById('edit-contact-email').value.trim();
+  const wa_name    = document.getElementById('edit-contact-wa-name').value.trim();
+  const first_name = document.getElementById('edit-contact-first-name').value.trim();
+  const surname    = document.getElementById('edit-contact-surname').value.trim();
+  const phone      = document.getElementById('edit-contact-phone').value.trim();
+  const email      = document.getElementById('edit-contact-email').value.trim();
 
   document.getElementById('edit-contact-err-name').style.display  = 'none';
   document.getElementById('edit-contact-err-phone').style.display = 'none';
   document.getElementById('edit-contact-err-api').style.display   = 'none';
 
   let valid = true;
-  if (!name)  { document.getElementById('edit-contact-err-name').style.display  = 'block'; valid = false; }
-  if (!phone) { document.getElementById('edit-contact-err-phone').style.display = 'block'; valid = false; }
+  if (!wa_name) { document.getElementById('edit-contact-err-name').style.display  = 'block'; valid = false; }
+  if (!phone)   { document.getElementById('edit-contact-err-phone').style.display = 'block'; valid = false; }
   if (!valid) return;
 
   try {
     const res = await fetch(`/api/promo/contacts/${contactId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, phone, email })
+      body: JSON.stringify({ wa_name, first_name, surname, phone, email })
     });
     const data = await res.json();
     if (res.ok) {
@@ -6624,7 +6676,7 @@ async function saveEditContact(contactId) {
 async function confirmDeleteContact(contactId) {
   const c = state.promoContacts.find(x => x.id === contactId);
   if (!c) return;
-  if (!confirm(`Delete contact "${c.name}"? All their leads will also be deleted. This cannot be undone.`)) return;
+  if (!confirm(`Delete contact "${c.wa_name}"? All their leads will also be deleted. This cannot be undone.`)) return;
   
   try {
     await DEL(`/api/promo/contacts/${contactId}`);
@@ -6657,7 +6709,7 @@ function renderPromoLeads() {
             : formatDateShort(l.created_at);
           return `
             <div class="promo-lead-card" onclick="openLeadDetail('${l.id}')">
-              <div class="promo-lead-card-contact">${esc(contact ? contact.name : 'Unknown')}</div>
+              <div class="promo-lead-card-contact">${esc(contact ? contact.wa_name : 'Unknown')}</div>
               <div class="promo-lead-card-product">${esc(l.product)}</div>
               <div style="display:flex;justify-content:space-between;align-items:center;">
                 <span class="promo-badge promo-badge-${l.product_type || 'other'}" style="font-size:9px;">${esc(l.product_type)}</span>
@@ -6681,7 +6733,7 @@ function openNewLeadModal(contactId) {
   if (!c) return;
 
   document.getElementById('modal-content').innerHTML = `
-    <div class="modal-title">New Lead for ${esc(c.name)}</div>
+    <div class="modal-title">New Lead for ${esc(c.wa_name)}</div>
     <div class="form-group">
       <label class="form-label">Product Name *</label>
       <input class="form-input" id="lead-product" type="text" placeholder="e.g. Golf Day 2026"/>
@@ -6733,7 +6785,7 @@ async function openLeadDetail(leadId) {
 function renderLeadDetailModal(lead, contact) {
   document.getElementById('modal-content').innerHTML = `
     <div class="modal-title">Lead: ${esc(lead.product)}</div>
-    <div class="modal-subtitle">Contact: ${esc(contact ? contact.name : 'Unknown')}</div>
+    <div class="modal-subtitle">Contact: ${esc(contact ? contact.wa_name : 'Unknown')}</div>
 
     <div class="promo-settings-section">
       <h3>Lead Configuration</h3>
@@ -6782,10 +6834,11 @@ function renderLeadDetailModal(lead, contact) {
     <div class="promo-settings-section" style="border-bottom:none;">
       <h3>Compose Message</h3>
       <textarea class="form-textarea" id="ld-compose" placeholder="Type your next message here..." style="min-height:100px;"></textarea>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px;">Merge fields: <code>{First Name}</code>, <code>{Surname}</code>, <code>{WA Name}</code></div>
       <div style="display:flex;gap:8px;margin-top:10px;">
         <button class="btn-secondary" id="btn-ai-suggest" onclick="suggestNextMessage('${lead.id}')">AI: Suggest Next</button>
-        <button class="btn-primary" onclick="sendDirectMessage('${lead.id}', '${contact?.phone}', '${contact?.name}', 'manual_outbound')">Send Now →</button>
-        <button class="btn-secondary" onclick="scheduleDirectMessage('${lead.id}', '${contact?.phone}', '${contact?.name}')">Schedule...</button>
+        <button class="btn-primary" onclick="sendDirectMessage('${lead.id}', '${contact?.phone}', '${contact?.wa_name}', 'manual_outbound')">Send Now →</button>
+        <button class="btn-secondary" onclick="scheduleDirectMessage('${lead.id}', '${contact?.phone}', '${contact?.wa_name}')">Schedule...</button>
       </div>
     </div>
 
@@ -6834,10 +6887,22 @@ async function suggestNextMessage(leadId) {
   }
 }
 
+function _resolveMergeFields(text, leadId) {
+  const lead = state.promoLeads.find(l => l.id === leadId);
+  if (!lead) return text;
+  const contact = state.promoContacts.find(c => c.id === lead.contact_id);
+  if (!contact) return text;
+  return text
+    .replace(/\{First Name\}/gi, contact.first_name || '')
+    .replace(/\{Surname\}/gi,    contact.surname    || '')
+    .replace(/\{WA Name\}/gi,    contact.wa_name    || '');
+}
+
 async function sendDirectMessage(leadId, phone, name, source) {
-  const content = document.getElementById('ld-compose').value.trim();
-  if (!content) { toast('Message is empty', 'error'); return; }
+  const raw = document.getElementById('ld-compose').value.trim();
+  if (!raw) { toast('Message is empty', 'error'); return; }
   if (!phone) { toast('Contact phone missing', 'error'); return; }
+  const content = _resolveMergeFields(raw, leadId);
 
   try {
     const res = await POST('/api/promo/messages/single', {
@@ -6859,8 +6924,9 @@ async function sendDirectMessage(leadId, phone, name, source) {
 }
 
 function scheduleDirectMessage(leadId, phone, name) {
-  const content = document.getElementById('ld-compose').value.trim();
-  if (!content) { toast('Message is empty', 'error'); return; }
+  const raw = document.getElementById('ld-compose').value.trim();
+  if (!raw) { toast('Message is empty', 'error'); return; }
+  const content = _resolveMergeFields(raw, leadId);
 
   const timeStr = prompt('Enter schedule time (ISO or YYYY-MM-DD HH:MM):', new Date(Date.now() + 3600000).toISOString().slice(0,16));
   if (!timeStr) return;
@@ -9890,7 +9956,7 @@ function openCreateDealFromMessageModal(messageId) {
   if (!msg) return;
 
   const contacts = state.promoContacts || [];
-  const contactOptions = contacts.map(c => `<option value="${c.id}">${esc(c.name)} (${esc(c.phone)})</option>`).join('');
+  const contactOptions = contacts.map(c => `<option value="${c.id}">${esc(c.wa_name)} (${esc(c.phone)})</option>`).join('');
 
   document.getElementById('modal-content').innerHTML = `
     <div class="modal-title">+ Create Deal from Message</div>

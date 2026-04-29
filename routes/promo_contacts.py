@@ -15,6 +15,27 @@ bp = Blueprint('promo_contacts', __name__)
 E164 = re.compile(r'^\+\d{7,15}$')
 
 
+def migrate_contacts():
+    """Convert legacy 'name' field to 'wa_name' and add missing first_name/surname."""
+    data = read_json(PROMO_CONTACTS_FILE) or {"contacts": []}
+    changed = False
+    for c in data.get("contacts", []):
+        if 'name' in c and 'wa_name' not in c:
+            c['wa_name'] = c.pop('name')
+            changed = True
+        if 'first_name' not in c:
+            c['first_name'] = ''
+            changed = True
+        if 'surname' not in c:
+            c['surname'] = ''
+            changed = True
+    if changed:
+        write_json(PROMO_CONTACTS_FILE, data)
+
+
+migrate_contacts()
+
+
 @bp.route('/api/promo/contacts', methods=['GET'])
 def list_promo_contacts():
     data = read_json(PROMO_CONTACTS_FILE) or {"contacts": []}
@@ -23,11 +44,11 @@ def list_promo_contacts():
 
 @bp.route('/api/promo/contacts', methods=['POST'])
 def create_promo_contact():
-    data  = request.get_json()
-    name  = data.get('name', '').strip()
-    phone = data.get('phone', '').strip()
-    if not name:
-        return jsonify({"error": "name is required"}), 400
+    data     = request.get_json()
+    wa_name  = data.get('wa_name', '').strip()
+    phone    = data.get('phone', '').strip()
+    if not wa_name:
+        return jsonify({"error": "WA Name is required"}), 400
     if not phone or not E164.match(phone):
         return jsonify({"error": "Phone must be in E.164 format, e.g. +27821234567"}), 400
     contacts_data = read_json(PROMO_CONTACTS_FILE) or {"contacts": []}
@@ -36,7 +57,9 @@ def create_promo_contact():
     now = datetime.utcnow().isoformat() + "Z"
     new_contact = {
         "id":         str(uuid.uuid4()),
-        "name":       name,
+        "wa_name":    wa_name,
+        "first_name": data.get('first_name', '').strip(),
+        "surname":    data.get('surname', '').strip(),
         "phone":      phone,
         "email":      data.get('email', ''),
         "tags":       data.get('tags', []),
@@ -64,21 +87,23 @@ def import_contacts_csv():
     imported = skipped_invalid = skipped_duplicate = 0
     now = datetime.utcnow().isoformat() + "Z"
     for row in reader:
-        name  = row.get('name', '').strip()
-        phone = row.get('phone', '').strip()
-        if not name or not phone or not E164.match(phone):
+        wa_name = row.get('WA Name', '').strip()
+        phone   = row.get('Phone', row.get('phone', '')).strip()
+        if not wa_name or not phone or not E164.match(phone):
             skipped_invalid += 1
             continue
         if phone in existing_phones:
             skipped_duplicate += 1
             continue
-        tags_raw = row.get('tags', '')
+        tags_raw = row.get('tags', row.get('Tags', ''))
         tags     = [t.strip() for t in tags_raw.split(';')] if tags_raw else []
         contacts_data["contacts"].append({
             "id":         str(uuid.uuid4()),
-            "name":       name,
+            "wa_name":    wa_name,
+            "first_name": row.get('First Name', '').strip(),
+            "surname":    row.get('Surname', '').strip(),
             "phone":      phone,
-            "email":      row.get('email', ''),
+            "email":      row.get('email', row.get('Email', '')),
             "tags":       tags,
             "source":     "csv",
             "notes":      "",
@@ -121,7 +146,7 @@ def update_promo_contact(contact_id):
             if any(c.get('phone') == new_phone for c in contacts if c['id'] != contact_id):
                 return jsonify({"error": "A contact with this phone number already exists"}), 409
         contact['phone'] = new_phone
-    for field in ['name', 'email', 'tags', 'source', 'notes']:
+    for field in ['wa_name', 'first_name', 'surname', 'email', 'tags', 'source', 'notes']:
         if field in data:
             contact[field] = data[field]
     contact['updated_at'] = datetime.utcnow().isoformat() + "Z"
