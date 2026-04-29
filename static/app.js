@@ -11013,6 +11013,7 @@ state.crm = state.crm || {
   weekStart:       null,   // ISO date string for outreach week
   selectedLead:    null,
   contactSearch:   '',
+  selectedContacts: new Set(),
 };
 
 // ── Tab switching ──────────────────────────────────────────────────────────
@@ -11098,7 +11099,9 @@ function renderCRMContacts() {
             <h2 style="margin:0;font-size:16px;font-weight:700;">
               Contacts <span id="crm-count" style="font-size:13px;color:var(--muted);font-weight:400;"></span>
             </h2>
-            <div style="display:flex;gap:8px;">
+            <div style="display:flex;gap:8px;align-items:center;">
+              <button id="crm-bulk-msg-btn" class="btn-wa-bulk" style="display:none;"
+                onclick="openBulkMessageDialog()">📲 Send Bulk Message</button>
               <label class="btn-secondary" style="font-size:12px;cursor:pointer;">
                 Import CSV
                 <input type="file" accept=".csv" style="display:none;" onchange="importContactsCSV(this)">
@@ -11109,6 +11112,8 @@ function renderCRMContacts() {
           <input class="crm-table-search" type="search" placeholder="Search name, phone, email…"
             oninput="state.crm.contactSearch=this.value;_refreshCRMTable()">
           <div class="crm-col-header">
+            <span><input type="checkbox" id="crm-select-all" title="Select all"
+              onchange="toggleSelectAllContacts(this.checked)" style="cursor:pointer;"></span>
             <span>Name</span><span>Phone</span><span>Email</span><span>Leads</span><span></span>
           </div>
           <div id="crm-table-body" class="crm-table-pane-inner"></div>
@@ -11147,8 +11152,14 @@ function _refreshCRMTable() {
   body.innerHTML = contacts.map(c => {
     const openLeads = state.crm.leads.filter(l => l.contact_id === c.id && l.status === 'open').length;
     const initials  = _crmInitials(c.name);
-    const selected  = state.crm.selectedContactId === c.id ? ' selected' : '';
-    return `<div class="crm-row${selected}" onclick="openContactPanel('${c.id}')">
+    const panelSel  = state.crm.selectedContactId === c.id ? ' selected' : '';
+    const chkd      = state.crm.selectedContacts.has(c.id) ? ' checked' : '';
+    const bulkSel   = state.crm.selectedContacts.has(c.id) ? ' crm-row-bulk-checked' : '';
+    return `<div class="crm-row${panelSel}${bulkSel}" onclick="openContactPanel('${c.id}')">
+      <div onclick="event.stopPropagation()">
+        <input type="checkbox" class="crm-bulk-cb" data-id="${c.id}"${chkd}
+          onchange="toggleContactSelect('${c.id}', this.checked)" style="cursor:pointer;">
+      </div>
       <div class="crm-row-name-cell">
         <div class="crm-avatar">${initials}</div>
         <div style="min-width:0;">
@@ -11168,6 +11179,161 @@ function _refreshCRMTable() {
       </div>
     </div>`;
   }).join('');
+
+  // Sync select-all checkbox state
+  const allCb = document.getElementById('crm-select-all');
+  if (allCb) {
+    allCb.checked = contacts.length > 0 && contacts.every(c => state.crm.selectedContacts.has(c.id));
+    allCb.indeterminate = !allCb.checked && contacts.some(c => state.crm.selectedContacts.has(c.id));
+  }
+}
+
+function toggleContactSelect(contactId, checked) {
+  if (checked) {
+    state.crm.selectedContacts.add(contactId);
+  } else {
+    state.crm.selectedContacts.delete(contactId);
+  }
+  _updateBulkBar();
+  // Update row highlight
+  document.querySelectorAll('.crm-bulk-cb').forEach(cb => {
+    const row = cb.closest('.crm-row');
+    if (row) row.classList.toggle('crm-row-bulk-checked', cb.checked);
+  });
+  // Sync select-all
+  const q = (state.crm.contactSearch || '').toLowerCase();
+  const visible = state.crm.contacts.filter(c =>
+    !q || c.name.toLowerCase().includes(q) ||
+    (c.phone||'').includes(q) || (c.email||'').toLowerCase().includes(q)
+  );
+  const allCb = document.getElementById('crm-select-all');
+  if (allCb) {
+    allCb.checked = visible.length > 0 && visible.every(c => state.crm.selectedContacts.has(c.id));
+    allCb.indeterminate = !allCb.checked && visible.some(c => state.crm.selectedContacts.has(c.id));
+  }
+}
+
+function toggleSelectAllContacts(checked) {
+  const q = (state.crm.contactSearch || '').toLowerCase();
+  const visible = state.crm.contacts.filter(c =>
+    !q || c.name.toLowerCase().includes(q) ||
+    (c.phone||'').includes(q) || (c.email||'').toLowerCase().includes(q)
+  );
+  visible.forEach(c => {
+    if (checked) state.crm.selectedContacts.add(c.id);
+    else state.crm.selectedContacts.delete(c.id);
+  });
+  _updateBulkBar();
+  _refreshCRMTable();
+}
+
+function _updateBulkBar() {
+  const btn = document.getElementById('crm-bulk-msg-btn');
+  if (!btn) return;
+  const count = state.crm.selectedContacts.size;
+  if (count > 0) {
+    btn.style.display = '';
+    btn.textContent = `📲 Send Bulk Message (${count})`;
+  } else {
+    btn.style.display = 'none';
+  }
+}
+
+function openBulkMessageDialog() {
+  const count = state.crm.selectedContacts.size;
+  if (count === 0) { toast('Select at least one contact.', 'error'); return; }
+
+  const now = new Date();
+  const defaultDate = now.toLocaleDateString('en-CA');
+  const defaultTime = '16:00';
+
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-title">Bulk WhatsApp Message</div>
+    <div style="font-size:13px;color:var(--muted);margin:-8px 0 16px;">
+      Sending to <strong>${count}</strong> contact${count > 1 ? 's' : ''}.
+      ${count > 1 ? `Messages staggered 3 min apart (total ~${(count - 1) * 3} min to complete).` : ''}
+    </div>
+    <label class="modal-label">Message</label>
+    <textarea id="bulk-msg-content" class="modal-input" rows="5"
+      placeholder="Type your WhatsApp message…" style="resize:vertical;"></textarea>
+
+    <div id="bulk-schedule-fields" style="display:none;margin-top:14px;">
+      <label class="modal-label">Send First Message At (SAST)</label>
+      <div style="display:flex;gap:8px;">
+        <input type="date" id="bulk-sched-date" value="${defaultDate}"
+          style="flex:1;padding:8px;border:1px solid var(--border);border-radius:6px;
+                 background:var(--bg);color:var(--text);font-size:13px;">
+        <input type="time" id="bulk-sched-time" value="${defaultTime}"
+          style="flex:1;padding:8px;border:1px solid var(--border);border-radius:6px;
+                 background:var(--bg);color:var(--text);font-size:13px;">
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px;flex-wrap:wrap;">
+      <button class="btn-secondary" style="font-size:13px;" onclick="closeModal()">Cancel</button>
+      <button class="btn-secondary" style="font-size:13px;"
+        onclick="toggleBulkScheduleFields()">🕐 Schedule Send</button>
+      <button class="btn-primary" style="font-size:13px;background:#25D366;border-color:#25D366;"
+        id="bulk-send-now-btn" onclick="submitBulkMessage(null)">📲 Send Now</button>
+    </div>`;
+  showModal();
+}
+
+function toggleBulkScheduleFields() {
+  const fields = document.getElementById('bulk-schedule-fields');
+  const sendNowBtn = document.getElementById('bulk-send-now-btn');
+  if (!fields) return;
+  const visible = fields.style.display !== 'none';
+  fields.style.display = visible ? 'none' : '';
+  if (visible) {
+    sendNowBtn.textContent = '📲 Send Now';
+    sendNowBtn.onclick = () => submitBulkMessage(null);
+  } else {
+    sendNowBtn.textContent = '📅 Confirm Schedule';
+    sendNowBtn.onclick = () => submitBulkMessageScheduled();
+  }
+}
+
+async function submitBulkMessageScheduled() {
+  const date = document.getElementById('bulk-sched-date')?.value;
+  const time = document.getElementById('bulk-sched-time')?.value;
+  if (!date || !time) { toast('Select a date and time.', 'error'); return; }
+  const scheduledDt = new Date(`${date}T${time}:00`);
+  if (scheduledDt <= new Date()) { toast('Scheduled time must be in the future.', 'error'); return; }
+  await submitBulkMessage(scheduledDt.toISOString());
+}
+
+async function submitBulkMessage(scheduledAt) {
+  const content = (document.getElementById('bulk-msg-content')||{}).value?.trim();
+  if (!content) { toast('Enter a message first.', 'error'); return; }
+
+  const contactIds = Array.from(state.crm.selectedContacts);
+  const body = { contact_ids: contactIds, content };
+  if (scheduledAt) body.scheduled_at = scheduledAt;
+
+  const btn = document.getElementById('bulk-send-now-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+
+  try {
+    const r = await POST('/api/crm/contacts/bulk_message', body);
+    if (r.error) { toast(r.error, 'error'); return; }
+    closeModal();
+    state.crm.selectedContacts.clear();
+    _updateBulkBar();
+    _refreshCRMTable();
+    const failMsg = r.failed > 0 ? ` (${r.failed} failed)` : '';
+    if (scheduledAt) {
+      const localStr = new Date(scheduledAt).toLocaleString('en-ZA',
+        {timeZone:'Africa/Johannesburg', dateStyle:'short', timeStyle:'short'});
+      toast(`Scheduled ${r.sent} message${r.sent !== 1 ? 's' : ''} from ${localStr}, 3 min apart.${failMsg}`, 'success');
+    } else {
+      toast(`Sending ${r.sent} message${r.sent !== 1 ? 's' : ''} — first immediately, rest 3 min apart.${failMsg}`, 'success');
+    }
+  } catch(e) {
+    toast('Bulk send failed: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; }
+  }
 }
 
 function openContactPanel(contactId) {

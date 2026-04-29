@@ -274,6 +274,122 @@ def import_contacts():
     return jsonify({'imported': imported, 'skipped': skipped, 'errors': errors})
 
 
+@bp.route('/api/crm/contacts/bulk_message', methods=['POST'])
+def bulk_message_contacts():
+    """
+    Send a WhatsApp message to multiple contacts with 3-minute stagger.
+    Body: { contact_ids: [...], content: "...", scheduled_at: "ISO"|null }
+    If scheduled_at is null → first message sends immediately, rest are
+    scheduled at +3, +6, +9 … minutes from now.
+    If scheduled_at is set  → messages start at that time, then +3, +6 … min.
+    """
+    data         = request.get_json() or {}
+    contact_ids  = data.get('contact_ids', [])
+    content      = data.get('content', '').strip()
+    scheduled_at = data.get('scheduled_at')  # ISO string or None
+
+    if not contact_ids:
+        return jsonify({'error': 'No contacts selected'}), 400
+    if not content:
+        return jsonify({'error': 'Message content is required'}), 400
+
+    contacts = _get_contacts()
+    leads    = _get_leads()
+    now      = datetime.utcnow().replace(tzinfo=timezone.utc)
+    delay_minutes = 3
+
+    # Parse base time for scheduled send
+    base_dt = None
+    if scheduled_at:
+        try:
+            base_dt = datetime.fromisoformat(scheduled_at.replace('Z', '+00:00'))
+        except ValueError:
+            return jsonify({'error': 'Invalid scheduled_at format'}), 400
+
+    results = []
+    leads_updated = False
+
+    for i, contact_id in enumerate(contact_ids):
+        contact = next((c for c in contacts if c['id'] == contact_id), None)
+        if not contact:
+            results.append({'contact_id': contact_id, 'error': 'Contact not found'})
+            continue
+
+        phone = contact.get('phone', '').strip()
+        if not phone:
+            results.append({'contact_id': contact_id,
+                            'contact_name': contact.get('name', ''),
+                            'error': 'No phone number'})
+            continue
+
+        # Staggered delivery time
+        if i == 0 and not scheduled_at:
+            msg_scheduled_at = None          # first message: send immediately
+        elif scheduled_at:
+            msg_dt = base_dt + timedelta(minutes=i * delay_minutes)
+            msg_scheduled_at = msg_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+        else:
+            msg_dt = now + timedelta(minutes=i * delay_minutes)
+            msg_scheduled_at = msg_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        # Find the most recent open lead for this contact (for logging)
+        contact_leads = [l for l in leads
+                         if l.get('contact_id') == contact_id and l.get('status') == 'open']
+        latest_lead   = max(contact_leads, key=lambda l: l.get('updated_at', ''), default=None)
+
+        try:
+            from services.distribution_service import push_to_outbox
+            result = push_to_outbox(
+                recipient_phone=phone,
+                recipient_name=contact.get('name', ''),
+                content=content,
+                source='crm_outreach',
+                scheduled_at=msg_scheduled_at,
+                contact_id=contact_id,
+                lead_id=latest_lead['id'] if latest_lead else None,
+                pipeline_id=latest_lead.get('pipeline_id', '') if latest_lead else None,
+            )
+        except Exception as e:
+            results.append({'contact_id': contact_id,
+                            'contact_name': contact.get('name', ''),
+                            'error': str(e)})
+            continue
+
+        # Log to lead's communication_log if a lead exists
+        if latest_lead:
+            ts = msg_scheduled_at or (now.strftime('%Y-%m-%dT%H:%M:%SZ'))
+            entry = {
+                'id':           str(uuid.uuid4()),
+                'direction':    'outbound',
+                'channel':      'whatsapp',
+                'content':      content,
+                'contact_name': contact.get('name', ''),
+                'logged_via':   'crm',
+                'sent_at':      ts,
+                'status':       'scheduled' if msg_scheduled_at else 'sent',
+                'message_id':   result.get('id'),
+            }
+            latest_lead.setdefault('communication_log', []).append(entry)
+            latest_lead['updated_at'] = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+            leads_updated = True
+
+        results.append({
+            'contact_id':   contact_id,
+            'contact_name': contact.get('name', ''),
+            'phone':        phone,
+            'message_id':   result.get('id'),
+            'ec2_synced':   result.get('ec2_synced'),
+            'scheduled_at': msg_scheduled_at,
+        })
+
+    if leads_updated:
+        _save_leads(leads)
+
+    sent    = sum(1 for r in results if 'message_id' in r)
+    failed  = sum(1 for r in results if 'error' in r)
+    return jsonify({'results': results, 'sent': sent, 'failed': failed})
+
+
 # ── Leads ──────────────────────────────────────────────────────────────────────
 
 @bp.route('/api/crm/leads', methods=['GET'])

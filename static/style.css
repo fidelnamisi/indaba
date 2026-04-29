@@ -4404,7 +4404,7 @@ body.light-mode .badge-focus-set:hover {
 /* Column header row */
 .crm-col-header {
   display: grid;
-  grid-template-columns: 2fr 1.2fr 1.6fr 80px 72px;
+  grid-template-columns: 28px 2fr 1.2fr 1.6fr 80px 72px;
   padding: 8px 20px;
   border-bottom: 1px solid var(--border);
   background: var(--bg2, var(--bg-secondary));
@@ -4421,7 +4421,7 @@ body.light-mode .badge-focus-set:hover {
 /* Data rows */
 .crm-row {
   display: grid;
-  grid-template-columns: 2fr 1.2fr 1.6fr 80px 72px;
+  grid-template-columns: 28px 2fr 1.2fr 1.6fr 80px 72px;
   align-items: center;
   padding: 10px 20px;
   border-bottom: 1px solid var(--border);
@@ -4431,6 +4431,22 @@ body.light-mode .badge-focus-set:hover {
 .crm-row:last-child { border-bottom: none; }
 .crm-row:hover { background: var(--surface2, var(--bg-secondary)); }
 .crm-row.selected { background: var(--p1-bg, #f0f4ff); }
+.crm-row.crm-row-bulk-checked { background: rgba(37, 211, 102, 0.08); }
+.crm-row.crm-row-bulk-checked.selected { background: rgba(37, 211, 102, 0.14); }
+
+/* Bulk send button */
+.btn-wa-bulk {
+  font-size: 12px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid #25D366;
+  background: #25D366;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.btn-wa-bulk:hover { background: #1ebe5d; border-color: #1ebe5d; }
 
 /* Avatar circle */
 .crm-avatar {
