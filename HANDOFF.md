@@ -2,6 +2,68 @@
 
 ---
 
+## 2026-05-12 — Data Recovery + EC2 Sender Debugging Needed
+
+### Context
+
+Fidel attempted to host Indaba online at `indaba.realmsandroads.com` (EC2). The migration caused too many issues and he has reverted to **localhost only**. Decision is final — Indaba runs on the Mac at `localhost:5050` going forward.
+
+### What Was Done This Session
+
+All data files were recovered from EC2 (`/opt/indaba-app.stage/data/`) and copied to `~/Indaba/data/`. A backup of the pre-recovery local data is at `~/Indaba/data_backup_20260512`. The code on `main` (GitHub) is the authoritative version — no EC2 app-layer code changes to worry about.
+
+**The app is back on localhost. Data is restored.**
+
+### Immediate Problem — EC2 Sender Is Broken
+
+The EC2 WhatsApp sender microservice (`indaba-sender` on port 5555) is not working. This is the top priority for the next session. The sender is separate from the Indaba app — it lives at `/opt/indaba-sender/sender.py` on EC2 and handles all WhatsApp dispatching.
+
+**Start debugging here:**
+
+Step 1 — Check sender health (no auth required):
+```bash
+curl http://13.218.60.13:5555/health
+```
+
+Step 2 — SSH into EC2 and check service status:
+```bash
+cp ~/Indaba/ec2-key.pem /tmp/ec2-temp-key && chmod 600 /tmp/ec2-temp-key
+PUB=$(ssh-keygen -y -f /tmp/ec2-temp-key) && aws ec2-instance-connect send-ssh-public-key --instance-id i-0b381c5c13988ca76 --instance-os-user ubuntu --ssh-public-key "$PUB" --region us-east-1 > /dev/null && ssh -i /tmp/ec2-temp-key -o StrictHostKeyChecking=no ubuntu@13.218.60.13 'sudo systemctl status indaba-sender && echo "---" && sudo journalctl -u indaba-sender -n 50 --no-pager'
+```
+
+Step 3 — Check GoWA (WhatsApp connection layer):
+```bash
+PUB=$(ssh-keygen -y -f /tmp/ec2-temp-key) && aws ec2-instance-connect send-ssh-public-key --instance-id i-0b381c5c13988ca76 --instance-os-user ubuntu --ssh-public-key "$PUB" --region us-east-1 > /dev/null && ssh -i /tmp/ec2-temp-key -o StrictHostKeyChecking=no ubuntu@13.218.60.13 'docker ps && curl -s http://localhost:3000/api/devices'
+```
+
+If GoWA has lost its WhatsApp session, open `http://13.218.60.13:3000` in a browser and re-scan the QR code — the sender auto-discovers the new device UUID, no redeploy needed.
+
+### Key Facts for Debugging
+
+- **Sender service:** `indaba-sender` (systemd), `/opt/indaba-sender/sender.py`, port 5555
+- **Status dashboard:** `http://13.218.60.13:5555/status` (Basic Auth: admin / admin)
+- **Master copy of sender.py:** `~/Indaba/tmp/sender.py` — edit this, then deploy to EC2
+- **GoWA:** Docker container `gowa_gowa_1`, port 3000
+- **Cron log:** `/var/log/indaba-cron.log` on EC2 — shows every `pop_next` response
+- **SSH:** Requires EC2 Instance Connect dance (see Section 3 of `indaba-ec2/HANDOFF-EC2.md`). Always chain `send-ssh-public-key` and `ssh`/`scp` in a single `&&` command — 60-second window.
+
+### What "Not Working" Could Mean
+
+1. `indaba-sender` service crashed — check `systemctl status` and `journalctl`
+2. GoWA container stopped — check `docker ps`
+3. WhatsApp session expired — rescan QR at `http://13.218.60.13:3000`
+4. EC2 instance itself stopped — check AWS console if `curl /health` times out entirely
+
+### Localhost App — Verified Working
+
+Code is on `main`. Data is restored from EC2. Run Indaba as normal:
+```bash
+cd ~/Indaba && python3 app.py
+```
+Or double-click `launch.command`.
+
+---
+
 ## 2026-04-27 — Discord Bot Live + Phase 6 Design
 
 ### What Changed
